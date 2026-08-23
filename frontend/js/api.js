@@ -1,6 +1,43 @@
 /**
  * DiskPulse API & WebSocket Client Service
  */
+
+// ── Canonical human formatting ────────────────────────────────────────────────
+// These MIRROR backend/config.py (format_bytes / format_uptime) byte for byte.
+// Some numbers are formatted server-side (*_human in the telemetry payload) and
+// some client-side (live upload progress, chart tooltips); if the two drifted,
+// the same drive would read differently in two places on one screen.
+// Change one, change the other.
+const DP_BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+
+/** 1503238553 -> "1.4 GB". 1024-based, labelled KB/MB/GB/TB like Windows. */
+function formatSize(bytes) {
+  let size = Number(bytes);
+  if (!isFinite(size) || size <= 0) return '0 B';
+
+  let i = 0;
+  while (size >= 1024 && i < DP_BYTE_UNITS.length - 1) {
+    size /= 1024;
+    i++;
+  }
+  // A decimal only below 10, so "4.0 KB" stays precise and "932 GB" stays short.
+  const text = (i === 0 || size >= 10) ? String(Math.round(size)) : size.toFixed(1);
+  return `${text} ${DP_BYTE_UNITS[i]}`;
+}
+
+/** 15129 -> "4h 12m"; 188400 -> "2d 4h 20m". Zero-padded so the width is stable. */
+function formatUptime(seconds) {
+  let total = Math.floor(Number(seconds));
+  if (!isFinite(total) || total < 0) total = 0;
+
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const mm = String(mins).padStart(2, '0');
+
+  return days ? `${days}d ${hours}h ${mm}m` : `${hours}h ${mm}m`;
+}
+
 class DiskPulseAPI {
   constructor() {
     this.baseUrl = window.location.origin;

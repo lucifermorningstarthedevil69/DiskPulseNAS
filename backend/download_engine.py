@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Any
 import humanize
 import urllib.parse
 
-from backend.config import STORAGE_ROOT, DOWNLOAD_CATEGORIES, folder_for_extension
+from backend.config import STORAGE_ROOT, DOWNLOAD_CATEGORIES, folder_for_extension, format_bytes
 from backend.ytdlp_service import (
     AUDIO_FORMATS,
     extract_with_fallback,
@@ -329,9 +329,9 @@ class DownloadTask:
             "downloaded_bytes": self.downloaded_bytes,
             "progress_percent": round(self.progress_percent, 1),
             "speed_bytes_sec": self.speed_bytes_sec,
-            "speed_human_sec": f"{humanize.naturalsize(self.speed_bytes_sec)}/s",
-            "downloaded_human": humanize.naturalsize(self.downloaded_bytes, binary=True),
-            "total_human": humanize.naturalsize(self.total_bytes, binary=True) if self.total_bytes > 0 else "Unknown",
+            "speed_human_sec": f"{format_bytes(self.speed_bytes_sec)}/s",
+            "downloaded_human": format_bytes(self.downloaded_bytes),
+            "total_human": format_bytes(self.total_bytes) if self.total_bytes > 0 else "Unknown",
             "eta_seconds": int(self.eta_seconds),
             "eta_human": humanize.naturaldelta(int(self.eta_seconds)) if self.eta_seconds > 0 else "--",
             "target_dir": str(self.target_dir.relative_to(Path(STORAGE_ROOT))).replace("\\", "/"),

@@ -762,3 +762,10 @@ if FRONTEND_DIR.exists():
     app.mount("/js",     NoCacheStaticFiles(directory=str(FRONTEND_DIR / "js")),  name="fe_js")
     # Catch-all for any other static assets (images, fonts, etc.)
     app.mount("/assets", NoCacheStaticFiles(directory=str(FRONTEND_DIR)),         name="fe_assets")
+    # Optionally vendored third-party libraries (PDF.js). Absent by default: the
+    # frontend probes /vendor first and falls back to a CDN, so this mount is
+    # what makes a fully offline / air-gapped install possible.
+    # See frontend/vendor/pdfjs/README.md.
+    vendor_dir = FRONTEND_DIR / "vendor"
+    if vendor_dir.exists():
+        app.mount("/vendor", NoCacheStaticFiles(directory=str(vendor_dir)),       name="fe_vendor")

@@ -16,8 +16,11 @@ import shutil
 import socket
 import ssl
 import sys
+import threading
 import time
-from typing import Any, Dict, Optional, List
+from typing import Any, Callable, Dict, Optional, List
+
+from backend.setup_manager import BASE_DIR
 
 # Cloudflare speed-test edge endpoints
 CF_HOST = "speed.cloudflare.com"
@@ -29,7 +32,7 @@ USER_AGENT = "DiskPulse-NAS-SpeedTest/2.0"
 _HEADERS = {"User-Agent": USER_AGENT, "Connection": "keep-alive"}
 
 # Tuning constants
-_LATENCY_SAMPLES = 6          # first sample is discarded (TLS/TCP warm-up)
+_LATENCY_SAMPLES = 6          # the first probe on each connection is discarded
 _DOWNLOAD_WARMUP_BYTES = 5_000_000       # 5 MB probe to size the real run
 _DOWNLOAD_MAX_BYTES = 200_000_000        # cap a single download at 200 MB
 _DOWNLOAD_MIN_BYTES = 10_000_000         # never measure on less than 10 MB
@@ -40,9 +43,79 @@ _UPLOAD_MIN_BYTES = 4_000_000
 _UPLOAD_TARGET_SECS = 6.0
 _CHUNK = 65536
 
+#: How often to emit a throughput sample. 100 ms is what the browser-based
+#: speed tests plot at: fine enough to show TCP ramp-up and mid-test dips, coarse
+#: enough that an 8 s run is ~80 points rather than thousands.
+_SAMPLE_INTERVAL = 0.1
+
+#: Runs kept on disk for the history chart. Small enough to load and parse
+#: instantly on every page load.
+_HISTORY_LIMIT = 30
+HISTORY_FILE = BASE_DIR / "speedtest_history.json"
+
 
 class SpeedTestError(Exception):
     pass
+
+
+# ──────────────────────────── throughput sampling ─────────────────────────────
+
+class ThroughputRecorder:
+    """Collects instantaneous throughput samples during one transfer.
+
+    The rate is computed per window, not cumulatively: a cumulative average
+    flattens out and hides exactly what the chart is for — the TCP slow-start
+    ramp at the beginning and any stall in the middle. Callers push byte counts
+    as they arrive and a sample is emitted whenever the window elapses.
+    """
+
+    def __init__(self, on_sample: Optional[Callable[[Dict[str, float]], None]] = None,
+                 interval: float = _SAMPLE_INTERVAL):
+        self.samples: List[Dict[str, float]] = []
+        self.interval = interval
+        self._on_sample = on_sample
+        self._start = time.perf_counter()
+        self._window_start = self._start
+        self._window_bytes = 0
+        self._total_bytes = 0
+
+    def add(self, nbytes: int) -> None:
+        self._window_bytes += nbytes
+        self._total_bytes += nbytes
+        now = time.perf_counter()
+        if now - self._window_start >= self.interval:
+            self._emit(now)
+
+    def _emit(self, now: float) -> None:
+        span = now - self._window_start
+        if span <= 0:
+            return
+        sample = {
+            "t": round(now - self._start, 3),
+            "mbps": round((self._window_bytes * 8) / (span * 1_000_000), 2),
+            "bytes": self._total_bytes,
+        }
+        self.samples.append(sample)
+        self._window_start = now
+        self._window_bytes = 0
+        if self._on_sample:
+            try:
+                self._on_sample(sample)
+            except Exception:
+                pass
+
+    def finish(self) -> None:
+        """Flush a final partial window so short transfers still plot something."""
+        if self._window_bytes > 0:
+            self._emit(time.perf_counter())
+
+    @property
+    def total_bytes(self) -> int:
+        return self._total_bytes
+
+    @property
+    def elapsed(self) -> float:
+        return time.perf_counter() - self._start
 
 
 # ─────────────────────────── low-level HTTP helpers ───────────────────────────
@@ -124,39 +197,86 @@ def _fetch_trace(timeout: float = 10.0) -> Dict[str, str]:
     return out
 
 
-def _measure_latency(samples: int = _LATENCY_SAMPLES, timeout: float = 8.0) -> Optional[float]:
-    """Reuse a single keep-alive connection so we time round-trips, not handshakes."""
+def _measure_latency(samples: int = _LATENCY_SAMPLES, timeout: float = 8.0,
+                     on_sample: Optional[Callable[[Dict[str, Any]], None]] = None
+                     ) -> Dict[str, Any]:
+    """Reuse a single keep-alive connection so we time round-trips, not handshakes.
+
+    Returns every sample, not just the median. Jitter is the whole reason: it can
+    only be computed from the spread, and a link with a good average ping but wild
+    variance is exactly the one that stutters during a video call. Failed probes
+    are counted too, so packet loss is visible instead of silently skipped.
+    """
     conn = _new_conn(timeout)
     times: List[float] = []
+    lost = 0
+    attempted = 0
+    # A probe only measures a round-trip once the connection has already paid for
+    # its TCP + TLS handshake. Keying that off the loop index instead would let a
+    # failed first probe push the *next* probe's handshake into the numbers, which
+    # inflates both the maximum and the jitter by an order of magnitude.
+    warmed = False
     try:
-        for i in range(samples):
+        for _i in range(samples):
+            counted = warmed
             try:
                 t0 = time.perf_counter()
                 conn.request("GET", CF_DOWN_PATH.format(n=0), headers=_HEADERS)
                 resp = conn.getresponse()
                 resp.read()
                 dt = (time.perf_counter() - t0) * 1000.0
-                if i > 0:  # discard first: includes TCP + TLS setup
-                    times.append(dt)
+                if not counted:
+                    warmed = True          # this probe was the handshake; discard it
+                    continue
+                attempted += 1
+                times.append(round(dt, 2))
+                if on_sample:
+                    try:
+                        on_sample({"i": len(times), "ms": round(dt, 2)})
+                    except Exception:
+                        pass
             except Exception:
-                # Connection may have dropped; reopen and keep sampling
+                if counted:
+                    attempted += 1
+                    lost += 1
+                # Connection may have dropped; reopen and keep sampling. The
+                # replacement connection is cold, so the next probe is a handshake.
                 try:
                     conn.close()
                 except Exception:
                     pass
                 conn = _new_conn(timeout)
+                warmed = False
     finally:
         try:
             conn.close()
         except Exception:
             pass
+
     if not times:
-        return None
-    times.sort()
-    return round(times[len(times) // 2], 1)  # median round-trip
+        # Nothing answered on a warmed connection: report total loss rather than
+        # dividing by an attempt count of zero.
+        return {"ping_ms": None, "samples": [], "jitter_ms": None,
+                "min_ms": None, "max_ms": None,
+                "loss_pct": round(100.0 * lost / attempted, 1) if attempted else 100.0}
+
+    ordered = sorted(times)
+    # Mean absolute difference between consecutive round-trips — the standard
+    # jitter definition (RFC 3550's approach), and what other speed tests show.
+    # Deliberately computed on arrival order, not the sorted copy.
+    deltas = [abs(b - a) for a, b in zip(times, times[1:])]
+    return {
+        "ping_ms": round(ordered[len(ordered) // 2], 1),   # median round-trip
+        "samples": times,
+        "jitter_ms": round(sum(deltas) / len(deltas), 2) if deltas else 0.0,
+        "min_ms": round(min(times), 1),
+        "max_ms": round(max(times), 1),
+        "loss_pct": round(100.0 * lost / attempted, 1),
+    }
 
 
-def _timed_download(nbytes: int, timeout: float) -> Optional[Dict[str, float]]:
+def _timed_download(nbytes: int, timeout: float,
+                    recorder: Optional[ThroughputRecorder] = None) -> Optional[Dict[str, Any]]:
     """Download nbytes and time it. Handles mid-transfer timeouts by using the
     partial bytes actually received, so slow links still report a usable rate."""
     conn = _new_conn(timeout)
@@ -170,9 +290,13 @@ def _timed_download(nbytes: int, timeout: float) -> Optional[Dict[str, float]]:
             if not chunk:
                 break
             read += len(chunk)
+            if recorder is not None:
+                recorder.add(len(chunk))
     except (socket.timeout, TimeoutError, OSError):
         pass
     finally:
+        if recorder is not None:
+            recorder.finish()
         try:
             conn.close()
         except Exception:
@@ -180,37 +304,78 @@ def _timed_download(nbytes: int, timeout: float) -> Optional[Dict[str, float]]:
     dt = time.perf_counter() - t0
     if dt <= 0 or read <= 0:
         return None
-    return {"bytes": float(read), "seconds": dt, "mbps": round((read * 8) / (dt * 1_000_000), 2)}
+    return {"bytes": float(read), "seconds": dt,
+            "mbps": round((read * 8) / (dt * 1_000_000), 2),
+            "samples": list(recorder.samples) if recorder is not None else []}
 
 
-def _measure_download() -> float:
+def _measure_download(on_sample: Optional[Callable[[Dict[str, float]], None]] = None,
+                      on_plan: Optional[Callable[[float], None]] = None
+                      ) -> Dict[str, Any]:
     # Warm-up probe to estimate the link, then size the main run to ~target secs.
     warm = _timed_download(_DOWNLOAD_WARMUP_BYTES, timeout=20.0)
+    # 50 Mbps is a sizing guess for when the warm-up told us nothing — it must never
+    # escape as a measurement, or an offline machine "measures" 50 Mbps.
     est_mbps = warm["mbps"] if warm else 50.0
     est_bytes_per_sec = max(est_mbps, 1.0) * 1_000_000 / 8.0
     target = int(est_bytes_per_sec * _DOWNLOAD_TARGET_SECS)
     target = max(_DOWNLOAD_MIN_BYTES, min(target, _DOWNLOAD_MAX_BYTES))
-    main = _timed_download(target, timeout=30.0)
+    # The byte cap can make the real transfer much shorter than the nominal target
+    # on a fast link, so tell the caller how long this is actually expected to take.
+    # Without it the progress bar races to the end of the phase and then sits still.
+    _announce_plan(on_plan, target / est_bytes_per_sec)
+
+    recorder = ThroughputRecorder(on_sample)
+    main = _timed_download(target, timeout=30.0, recorder=recorder)
     if main:
-        return main["mbps"]
-    return round(est_mbps, 2)
+        return {"mbps": main["mbps"], "bytes": int(main["bytes"]),
+                "seconds": round(main["seconds"], 2), "samples": main["samples"]}
+    if not warm:
+        # Nothing was transferred at all. Report zero so the caller's connectivity
+        # check fires, instead of passing the sizing guess off as a measurement.
+        return {"mbps": 0.0, "bytes": 0, "seconds": 0.0, "samples": []}
+    # The warm-up is all we have. Report its rate rather than nothing, but say so
+    # by leaving the sample list empty — the chart then shows no ramp curve.
+    return {"mbps": round(est_mbps, 2), "bytes": int(warm["bytes"]),
+            "seconds": round(warm["seconds"], 2), "samples": []}
 
 
-def _timed_upload(nbytes: int, timeout: float) -> Optional[Dict[str, float]]:
-    """POST nbytes to Cloudflare /__up (contents discarded) and time it."""
-    payload = bytes(nbytes)  # zero-filled; fast to allocate, content is irrelevant
+def _announce_plan(on_plan: Optional[Callable[[float], None]], secs: float) -> None:
+    """Hand the expected phase duration to the caller. Never fail the transfer."""
+    if on_plan is None:
+        return
+    try:
+        on_plan(max(0.1, float(secs)))
+    except Exception:
+        pass
+
+
+def _timed_upload(nbytes: int, timeout: float,
+                  recorder: Optional[ThroughputRecorder] = None) -> Optional[Dict[str, Any]]:
+    """POST nbytes to Cloudflare /__up (contents discarded) and time it.
+
+    When a recorder is supplied the body is sent as an iterable of chunks so the
+    upload can be sampled as it drains, instead of handing http.client one opaque
+    blob and learning nothing until it finishes.
+    """
     conn = _new_conn(timeout)
     t0 = time.perf_counter()
     try:
         headers = dict(_HEADERS)
         headers["Content-Type"] = "application/octet-stream"
-        headers["Content-Length"] = str(len(payload))
-        conn.request("POST", CF_UP_PATH, body=payload, headers=headers)
+        headers["Content-Length"] = str(nbytes)
+        if recorder is None:
+            body: Any = bytes(nbytes)
+        else:
+            body = _chunked_payload(nbytes, recorder)
+        conn.request("POST", CF_UP_PATH, body=body, headers=headers)
         resp = conn.getresponse()
         resp.read()
     except (socket.timeout, TimeoutError, OSError):
         return None
     finally:
+        if recorder is not None:
+            recorder.finish()
         try:
             conn.close()
         except Exception:
@@ -218,33 +383,143 @@ def _timed_upload(nbytes: int, timeout: float) -> Optional[Dict[str, float]]:
     dt = time.perf_counter() - t0
     if dt <= 0:
         return None
-    return {"bytes": float(nbytes), "seconds": dt, "mbps": round((nbytes * 8) / (dt * 1_000_000), 2)}
+    return {"bytes": float(nbytes), "seconds": dt,
+            "mbps": round((nbytes * 8) / (dt * 1_000_000), 2),
+            "samples": list(recorder.samples) if recorder is not None else []}
 
 
-def _measure_upload() -> float:
+def _chunked_payload(nbytes: int, recorder: ThroughputRecorder):
+    """Yield a zero-filled body in chunks, recording each one as it is handed over.
+
+    Note this measures bytes written into the socket, which on a fast machine runs
+    ahead of bytes actually on the wire until the send buffer fills. Over a
+    multi-second transfer that head start is bounded by the buffer size and washes
+    out; the reported total rate still comes from the full wall-clock time.
+    """
+    chunk = bytes(_CHUNK)
+    remaining = nbytes
+    while remaining > 0:
+        n = min(_CHUNK, remaining)
+        remaining -= n
+        recorder.add(n)
+        yield chunk if n == _CHUNK else chunk[:n]
+
+
+def _measure_upload(on_sample: Optional[Callable[[Dict[str, float]], None]] = None,
+                    on_plan: Optional[Callable[[float], None]] = None
+                    ) -> Dict[str, Any]:
     warm = _timed_upload(_UPLOAD_WARMUP_BYTES, timeout=20.0)
+    # As with download, 25 Mbps only sizes the payload; it is never a result.
     est_mbps = warm["mbps"] if warm else 25.0
     est_bytes_per_sec = max(est_mbps, 1.0) * 1_000_000 / 8.0
     target = int(est_bytes_per_sec * _UPLOAD_TARGET_SECS)
     target = max(_UPLOAD_MIN_BYTES, min(target, _UPLOAD_MAX_BYTES))
-    main = _timed_upload(target, timeout=30.0)
+    _announce_plan(on_plan, target / est_bytes_per_sec)
+
+    recorder = ThroughputRecorder(on_sample)
+    main = _timed_upload(target, timeout=30.0, recorder=recorder)
     if main:
-        return main["mbps"]
-    return round(est_mbps, 2)
+        return {"mbps": main["mbps"], "bytes": int(main["bytes"]),
+                "seconds": round(main["seconds"], 2), "samples": main["samples"]}
+    if recorder.total_bytes > 0:
+        # The POST timed out, but real bytes went out before it did and the user
+        # watched them plot. Keep that trace and rate it over the whole attempt —
+        # which includes the stall, so it errs low rather than flattering the link.
+        secs = recorder.elapsed
+        return {"mbps": round((recorder.total_bytes * 8) / (secs * 1_000_000), 2) if secs > 0 else 0.0,
+                "bytes": recorder.total_bytes, "seconds": round(secs, 2),
+                "samples": list(recorder.samples)}
+    if not warm:
+        return {"mbps": 0.0, "bytes": 0, "seconds": 0.0, "samples": []}
+    return {"mbps": round(est_mbps, 2), "bytes": int(warm["bytes"]),
+            "seconds": round(warm["seconds"], 2), "samples": []}
 
 
 # ─────────────────────────────── manager ──────────────────────────────────────
+
+#: Ordered phases of one run, with the fraction of the total each one represents.
+#: Only used to drive the progress bar, so the weights are rough by design —
+#: they're the observed share of a typical ~25 s run.
+_PHASES = (
+    ("connecting", "Connecting to Cloudflare edge", 0.08),
+    ("latency", "Measuring latency and jitter", 0.12),
+    ("download", "Measuring download throughput", 0.50),
+    ("upload", "Measuring upload throughput", 0.30),
+)
+
+
+def _load_history() -> List[Dict[str, Any]]:
+    """Past runs, oldest first. A corrupt or missing file is simply no history."""
+    try:
+        raw = HISTORY_FILE.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [r for r in data if isinstance(r, dict)][-_HISTORY_LIMIT:]
+
+
+def _append_history(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Record one completed run. Never let a disk problem fail the speed test."""
+    entry = {
+        "timestamp": result.get("timestamp"),
+        "download_mbps": result.get("download_mbps"),
+        "upload_mbps": result.get("upload_mbps"),
+        "ping_ms": result.get("ping_ms"),
+        "jitter_ms": result.get("jitter_ms"),
+        "isp": result.get("isp"),
+        "server": (result.get("server") or {}).get("name"),
+    }
+    history = _load_history()
+    history.append(entry)
+    history = history[-_HISTORY_LIMIT:]
+    try:
+        HISTORY_FILE.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return history
+
 
 class SpeedTestManager:
     def __init__(self):
         self.is_running = False
         self.last_status = "idle"  # idle, running, completed, error
         self.error_message = ""
-        self.latest_result: Dict[str, Any] = {
+        self.latest_result: Dict[str, Any] = self._blank_result()
+        self.history: List[Dict[str, Any]] = _load_history()
+        # Written from the worker thread, read by every HTTP poll, so it needs a
+        # lock — and readers get a copy, never the list the sampler is appending to.
+        self._lock = threading.Lock()
+        self._live = self._blank_live()
+        self._started_at = time.time()
+        # How long each transfer phase is expected to take, so the progress bar can
+        # be scaled to the payload that was actually sized rather than the nominal
+        # target. Replaced by _on_plan once the warm-up has measured the link.
+        self._targets: Dict[str, float] = {
+            "download": _DOWNLOAD_TARGET_SECS,
+            "upload": _UPLOAD_TARGET_SECS,
+        }
+        self._current_task: Optional[asyncio.Task] = None
+
+    @staticmethod
+    def _blank_result() -> Dict[str, Any]:
+        """A result with no measurements in it.
+
+        Both the initial state and the error state are built from this. An error
+        must never inherit the previous run's numbers: showing "94 Mbps" next to a
+        TEST ERROR badge reads as a fresh measurement, and the stale samples would
+        be charted as if they had just been captured.
+        """
+        return {
             "status": "idle",
             "download_mbps": 0.0,
             "upload_mbps": 0.0,
             "ping_ms": 0.0,
+            "jitter_ms": None,
             "server": {
                 "name": "Not Tested Yet",
                 "sponsor": "--",
@@ -254,15 +529,100 @@ class SpeedTestManager:
             "client_ip": "--",
             "isp": "--",
             "timestamp": None,
+            "download_samples": [],
+            "upload_samples": [],
+            "ping_samples": [],
         }
-        self._current_task: Optional[asyncio.Task] = None
+
+    @staticmethod
+    def _blank_live() -> Dict[str, Any]:
+        return {
+            "phase": "idle",
+            "phase_label": "Idle",
+            "progress": 0,
+            "elapsed": 0.0,
+            "mbps": 0.0,
+            "download_samples": [],
+            "upload_samples": [],
+            "ping_samples": [],
+        }
+
+    # ── live progress, written from the measurement thread ────────────────────
+
+    def _set_phase(self, phase: str) -> None:
+        label = next((lbl for key, lbl, _ in _PHASES if key == phase), phase.title())
+        base = 0.0
+        for key, _lbl, weight in _PHASES:
+            if key == phase:
+                break
+            base += weight
+        with self._lock:
+            self._live["phase"] = phase
+            self._live["phase_label"] = label
+            self._live["progress"] = int(round(base * 100))
+            self._live["mbps"] = 0.0
+            self._live["elapsed"] = round(time.time() - self._started_at, 1)
+
+    def _phase_progress(self, phase: str, fraction: float) -> None:
+        """Advance the bar within the current phase (fraction 0..1)."""
+        base = 0.0
+        weight = 0.0
+        for key, _lbl, w in _PHASES:
+            if key == phase:
+                weight = w
+                break
+            base += w
+        pct = int(round((base + weight * max(0.0, min(1.0, fraction))) * 100))
+        with self._lock:
+            self._live["progress"] = max(self._live.get("progress", 0), pct)
+
+    def _on_transfer_sample(self, kind: str):
+        key = f"{kind}_samples"
+
+        def handler(sample: Dict[str, float]) -> None:
+            with self._lock:
+                self._live[key].append(sample)
+                self._live["mbps"] = sample["mbps"]
+                self._live["elapsed"] = round(time.time() - self._started_at, 1)
+            target = self._targets.get(kind) or 0.0
+            if target > 0:
+                self._phase_progress(kind, sample["t"] / target)
+
+        return handler
+
+    def _on_plan(self, kind: str):
+        """Receives the expected duration of a transfer phase once it is sized."""
+        def handler(secs: float) -> None:
+            with self._lock:
+                self._targets[kind] = secs
+
+        return handler
+
+    def _on_ping_sample(self, sample: Dict[str, Any]) -> None:
+        with self._lock:
+            self._live["ping_samples"].append(sample)
+            self._live["elapsed"] = round(time.time() - self._started_at, 1)
+
+    # ── public state ──────────────────────────────────────────────────────────
 
     def get_status(self) -> Dict[str, Any]:
+        with self._lock:
+            live = {
+                **self._live,
+                "download_samples": list(self._live["download_samples"]),
+                "upload_samples": list(self._live["upload_samples"]),
+                "ping_samples": list(self._live["ping_samples"]),
+            }
         return {
             "is_running": self.is_running,
             "status": self.last_status,
             "error_message": self.error_message,
-            "latest": self.latest_result,
+            # Copies, so a caller that mutates the response — or serialises it while
+            # a run finishes — can't reach into the manager's own state. Shallow is
+            # enough: both are replaced wholesale, never edited in place.
+            "latest": dict(self.latest_result),
+            "live": live,
+            "history": list(self.history),
         }
 
     def start_test(self, server_id: Optional[int] = None) -> Dict[str, Any]:
@@ -272,19 +632,26 @@ class SpeedTestManager:
                 "is_running": True,
                 "message": "Speed test is already in progress",
                 "status": "running",
-                "latest": self.latest_result,
+                "latest": dict(self.latest_result),
             }
 
         self.is_running = True
         self.last_status = "running"
         self.error_message = ""
+        self._started_at = time.time()
+        with self._lock:
+            self._live = self._blank_live()
+            self._live["phase"] = "connecting"
+            self._live["phase_label"] = _PHASES[0][1]
+            self._targets = {"download": _DOWNLOAD_TARGET_SECS,
+                             "upload": _UPLOAD_TARGET_SECS}
         self._current_task = asyncio.create_task(self._run_async_test(server_id))
         return {
             "success": True,
             "is_running": True,
             "message": "Speed test started",
             "status": "running",
-            "latest": self.latest_result,
+            "latest": dict(self.latest_result),
         }
 
     async def _run_async_test(self, server_id: Optional[int] = None):
@@ -295,13 +662,26 @@ class SpeedTestManager:
             self.latest_result["status"] = "completed"
             self.last_status = "completed"
             self.error_message = ""
+            # Writing the history file is disk I/O; keep it off the event loop.
+            self.history = await loop.run_in_executor(None, _append_history, res)
+            with self._lock:
+                self._live["phase"] = "done"
+                self._live["phase_label"] = "Complete"
+                self._live["progress"] = 100
         except Exception as e:
             self.last_status = "error"
             self.error_message = f"Speed test failed: {e}"
+            # Built from the blank template, not from the last result — see
+            # _blank_result. Only the server name is overridden, to say what failed.
             self.latest_result = {
-                **self.latest_result,
+                **self._blank_result(),
                 "status": "error",
+                "server": {"name": "Test Failed", "sponsor": "--",
+                           "country": "--", "distance_km": None},
             }
+            with self._lock:
+                self._live["phase"] = "error"
+                self._live["phase_label"] = "Failed"
         finally:
             self.is_running = False
 
@@ -310,6 +690,7 @@ class SpeedTestManager:
         # Warm up DNS/TLS first; the very first HTTPS request to Cloudflare on a
         # cold process is the slowest, and it was making /meta time out (empty
         # IP / ISP / location) even when the later transfers succeeded.
+        self._set_phase("connecting")
         _warmup()
 
         meta = _fetch_meta()
@@ -322,9 +703,20 @@ class SpeedTestManager:
                 meta.setdefault("colo", trace.get("colo"))
                 meta.setdefault("country", trace.get("loc"))
 
-        ping_ms = _measure_latency()
-        download_mbps = _measure_download()
-        upload_mbps = _measure_upload()
+        self._set_phase("latency")
+        latency = _measure_latency(on_sample=self._on_ping_sample)
+        ping_ms = latency["ping_ms"]
+
+        self._set_phase("download")
+        down = _measure_download(self._on_transfer_sample("download"),
+                                 self._on_plan("download"))
+
+        self._set_phase("upload")
+        up = _measure_upload(self._on_transfer_sample("upload"),
+                             self._on_plan("upload"))
+
+        download_mbps = down["mbps"]
+        upload_mbps = up["mbps"]
 
         # If we could not move any data at all, treat it as a hard failure so the
         # UI shows an error rather than a bogus 0 Mbps "completed" result.
@@ -344,6 +736,17 @@ class SpeedTestManager:
             "download_mbps": round(download_mbps, 2),
             "upload_mbps": round(upload_mbps, 2),
             "ping_ms": round(ping_ms, 1) if ping_ms is not None else 0.0,
+            "jitter_ms": latency["jitter_ms"],
+            "ping_min_ms": latency["min_ms"],
+            "ping_max_ms": latency["max_ms"],
+            "packet_loss_pct": latency["loss_pct"],
+            "ping_samples": latency["samples"],
+            "download_samples": down["samples"],
+            "upload_samples": up["samples"],
+            "download_bytes": down["bytes"],
+            "upload_bytes": up["bytes"],
+            "download_seconds": down["seconds"],
+            "upload_seconds": up["seconds"],
             "server": {
                 "name": server_name,
                 "sponsor": "Cloudflare",

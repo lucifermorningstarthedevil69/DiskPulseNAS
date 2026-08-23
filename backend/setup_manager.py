@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import psutil
-import humanize
+from backend.config import format_bytes
 
 # Config file stored beside run.py
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -119,9 +119,9 @@ def get_available_drives() -> List[Dict[str, Any]]:
             "used": usage.used,
             "free": usage.free,
             "percent_used": round(usage.percent, 1),
-            "total_human": humanize.naturalsize(usage.total, binary=True),
-            "used_human": humanize.naturalsize(usage.used, binary=True),
-            "free_human": humanize.naturalsize(usage.free, binary=True),
+            "total_human": format_bytes(usage.total),
+            "used_human": format_bytes(usage.used),
+            "free_human": format_bytes(usage.free),
             "suggested_path": suggested_path,
             "is_system": _is_system_drive(part, is_windows),
             "warning": warning,

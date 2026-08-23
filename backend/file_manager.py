@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 import humanize
 
-from backend.config import STORAGE_ROOT
+from backend.config import STORAGE_ROOT, format_bytes
 
 class FileManager:
     def __init__(self, root_dir: str = None):
@@ -67,7 +67,7 @@ class FileManager:
         else:
             children_count = 0
             size_bytes = stat.st_size
-            size_human = humanize.naturalsize(size_bytes, binary=True)
+            size_human = format_bytes(size_bytes)
 
         ext = path.suffix.lstrip(".").lower() if not is_dir else ""
         

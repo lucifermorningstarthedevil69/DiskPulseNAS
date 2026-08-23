@@ -33,6 +33,8 @@ import sys
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend.config import format_bytes
+
 # ─────────────────────────────── constants ────────────────────────────────────
 
 #: Browsers probed for a signed-in youtube.com session, best-first.
@@ -564,14 +566,14 @@ def _size_of(fmt: Dict[str, Any]) -> Optional[int]:
 
 
 def _fmt_size(nbytes: Optional[int]) -> str:
+    """Format a probed format's size, or "" when yt-dlp didn't report one.
+
+    The empty string is deliberate: an unknown size should show nothing in the
+    quality picker rather than a misleading "0 B".
+    """
     if not nbytes:
         return ""
-    val = float(nbytes)
-    for unit in ("B", "KB", "MB", "GB"):
-        if val < 1024 or unit == "GB":
-            return f"{val:.0f} {unit}" if unit in ("B", "KB") else f"{val:.1f} {unit}"
-        val /= 1024
-    return ""
+    return format_bytes(nbytes)
 
 
 def probe_formats(url: str) -> Dict[str, Any]:

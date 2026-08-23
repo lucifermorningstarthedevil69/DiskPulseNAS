@@ -16,8 +16,10 @@
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
 
-  <!-- Chart.js for Telemetry Charts -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Chart.js for Telemetry Charts. Pinned to v4: the dashboard now builds six
+       charts against the v4 API (object-keyed scales, {x,y} point data, per-dataset
+       `type` inside a bar chart), all of which a future major would break. -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 
   <!-- QRCode.js for Mobile Device Uploader -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
@@ -83,6 +85,12 @@
           </div>
           <div class="progress-mini">
             <div class="progress-mini-bar" id="sidebar-pool-bar" style="width: 0%;"></div>
+          </div>
+          <div class="quick-bar-row" style="font-size: 0.7rem; white-space: nowrap;">
+            <span><span style="color: var(--text-muted);">Used</span>
+              <span id="sidebar-pool-used" style="color: var(--accent-cyan); font-weight: 600;">--</span></span>
+            <span><span style="color: var(--text-muted);">Total</span>
+              <span id="sidebar-pool-total" style="color: var(--text-main); font-weight: 600;">--</span></span>
           </div>
           <div class="quick-bar-row" style="margin-top: 4px; font-size: 0.7rem;">
             <span id="sidebar-hostname">NAS Server</span>
@@ -306,6 +314,67 @@
               </div>
             </div>
 
+            <!-- Live phase progress: only meaningful while a test is running, so the
+                 renderer hides this whole row when it is idle. -->
+            <div id="st-progress-row" style="margin-top: 14px; display: none;">
+              <div
+                style="display: flex; justify-content: space-between; align-items: baseline; font-size: 0.75rem; margin-bottom: 6px;">
+                <span style="color: var(--text-muted); font-weight: 600;" id="st-phase-label">Idle</span>
+                <span style="color: var(--text-dim);"><strong id="st-live-mbps"
+                    style="color: var(--accent-cyan);">--</strong> Mbps &nbsp;·&nbsp; <span
+                    id="st-elapsed">0.0s</span></span>
+              </div>
+              <div class="progress-mini" style="height: 6px;">
+                <div class="progress-mini-bar" id="st-progress-bar" style="width: 0%;"></div>
+              </div>
+            </div>
+
+            <!-- Throughput over time: the shape of the transfer is what a single
+                 average number can't tell you — ramp-up, stalls and sustained rate. -->
+            <div style="margin-top: 18px;">
+              <div
+                style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.8rem;">
+                <span style="color: var(--text-muted); font-weight: 600;"><i data-lucide="line-chart"
+                    style="width: 14px; height: 14px; display: inline; vertical-align: -2px;"></i> Throughput Over
+                  Time</span>
+                <span style="font-size: 0.7rem; color: var(--text-dim);" id="st-live-hint">Run a test to plot the
+                  transfer</span>
+              </div>
+              <div class="chart-container" style="height: 220px;">
+                <canvas id="chart-speedtest-live"></canvas>
+              </div>
+            </div>
+
+            <div class="charts-grid" style="margin-top: 18px; margin-bottom: 0;">
+              <!-- Latency detail -->
+              <div>
+                <div
+                  style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.8rem;">
+                  <span style="color: var(--text-muted); font-weight: 600;"><i data-lucide="activity"
+                      style="width: 14px; height: 14px; display: inline; vertical-align: -2px;"></i> Latency &
+                    Jitter</span>
+                  <span style="font-size: 0.7rem; color: var(--text-dim);" id="st-jitter-summary">--</span>
+                </div>
+                <div class="chart-container" style="height: 200px;">
+                  <canvas id="chart-speedtest-ping"></canvas>
+                </div>
+              </div>
+
+              <!-- Run history -->
+              <div>
+                <div
+                  style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.8rem;">
+                  <span style="color: var(--text-muted); font-weight: 600;"><i data-lucide="history"
+                      style="width: 14px; height: 14px; display: inline; vertical-align: -2px;"></i> Recent Runs</span>
+                  <span style="font-size: 0.7rem; color: var(--text-dim);" id="st-history-summary">No previous
+                    runs</span>
+                </div>
+                <div class="chart-container" style="height: 200px;">
+                  <canvas id="chart-speedtest-history"></canvas>
+                </div>
+              </div>
+            </div>
+
             <div
               style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; font-size: 0.75rem; color: var(--text-dim); border-top: 1px solid var(--border-glass); padding-top: 10px;">
               <span><i data-lucide="clock" style="width: 12px; height: 12px; display: inline;"></i> Last Tested: <strong
@@ -378,6 +447,12 @@
                   <i data-lucide="list"></i>
                 </button>
               </div>
+              <button class="btn btn-secondary" id="fm-select-all-btn" title="Select all items">
+                <i data-lucide="check-square"></i> Select All
+              </button>
+              <button class="btn btn-secondary" id="fm-select-none-btn" title="Clear selection">
+                <i data-lucide="square"></i> Select None
+              </button>
             </div>
           </div>
 
@@ -667,20 +742,32 @@
               <label style="display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; font-size: 0.83rem; color: var(--text-muted); cursor: pointer;">
                 <input type="checkbox" id="upload-sort-type" checked
                   style="width: 16px; height: 16px; margin-top: 1px; accent-color: var(--accent-cyan); cursor: pointer; flex-shrink: 0;">
-                <span>Sort into type folders (Images, Video, Audio, Documents, Archives, Disk&nbsp;Images, Programs, Other). Uncheck to keep a folder's original structure.</span>
+                <span>Sort <strong>individual files</strong> into type folders (Images, Video, Audio, Documents, Archives, Disk&nbsp;Images, Programs, Other).</span>
               </label>
+              <p style="font-size: 0.78rem; color: var(--text-dim); margin: 8px 0 0;">
+                <i data-lucide="folder" style="width: 13px; height: 13px; vertical-align: -2px;"></i>
+                Whole folders are always uploaded intact — the structure is preserved and never split into type folders. They land in <strong>Backup</strong> unless you choose another destination above.
+              </p>
             </div>
 
+            <!-- Hidden pickers live OUTSIDE the dropzone: a programmatic .click()
+                 bubbles, and the dropzone's own click handler would re-open the
+                 plain file dialog on top of the folder dialog. -->
+            <input type="file" id="uploader-file-input" multiple style="display: none;">
+            <input type="file" id="uploader-folder-input" webkitdirectory directory multiple style="display: none;">
+
             <div class="uploader-dropzone" id="uploader-dropzone">
-              <input type="file" id="uploader-file-input" multiple style="display: none;">
-              <input type="file" id="uploader-folder-input" webkitdirectory directory multiple style="display: none;">
               <i data-lucide="cloud-upload" class="dropzone-icon"></i>
-              <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 6px;">Drag & Drop files here</h3>
+              <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 6px;">Drag & Drop files or folders here</h3>
               <p style="font-size: 0.85rem; color: var(--text-muted);">or use the buttons below</p>
               <div style="margin-top: 14px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
                 <button type="button" class="btn btn-secondary btn-sm" id="uploader-pick-files"><i data-lucide="file-plus"></i> Add files</button>
                 <button type="button" class="btn btn-secondary btn-sm" id="uploader-pick-folder"><i data-lucide="folder-plus"></i> Add folder</button>
               </div>
+              <p style="font-size: 0.75rem; color: var(--text-dim); margin: 12px 0 0;">
+                <i data-lucide="info" style="width: 12px; height: 12px; vertical-align: -2px;"></i>
+                Tip: <strong>dragging</strong> a folder in skips your browser's “Upload N files to this site?” prompt — <strong>Add folder</strong> always shows it.
+              </p>
             </div>
           </div>
 
@@ -1036,6 +1123,49 @@
     </div>
   </div>
 
+  <!-- Folder Upload Review Modal (in-app confirmation before a whole folder is queued) -->
+  <div class="modal-backdrop" id="modal-folder-confirm">
+    <div class="modal-card" style="max-width: 520px;">
+      <div class="modal-header">
+        <h3 class="modal-title"><i data-lucide="cloud-upload"></i> Confirm folder upload</h3>
+        <button class="btn btn-secondary btn-icon modal-close ufc-dismiss"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div
+          style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-glass); border-radius: var(--radius-md);">
+          <i data-lucide="folder" style="color: var(--accent-cyan); flex-shrink: 0;"></i>
+          <div style="overflow: hidden;">
+            <strong id="ufc-folder-name"
+              style="display: block; font-size: 0.92rem; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></strong>
+            <div id="ufc-stats" style="font-size: 0.78rem; color: var(--text-dim); margin-top: 2px;"></div>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: baseline; gap: 8px; font-size: 0.82rem; margin-top: 12px;">
+          <span style="color: var(--text-muted); flex-shrink: 0;">Destination</span>
+          <span id="ufc-dest"
+            style="color: var(--accent-cyan); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+        </div>
+
+        <p style="font-size: 0.78rem; color: var(--text-dim); margin: 8px 0 0;">
+          <i data-lucide="shield-check" style="width: 13px; height: 13px; vertical-align: -2px;"></i>
+          Structure preserved — never split into type folders.
+        </p>
+
+        <details style="margin-top: 12px;">
+          <summary id="ufc-toggle" style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted); user-select: none;">Show files</summary>
+          <div id="ufc-file-list"
+            style="max-height: 220px; overflow-y: auto; margin-top: 8px; border: 1px solid var(--border-glass); border-radius: var(--radius-md);"></div>
+        </details>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary modal-close ufc-dismiss">Cancel</button>
+        <button class="btn btn-primary" id="ufc-upload"><i data-lucide="upload"></i> <span
+            id="ufc-upload-label">Upload</span></button>
+      </div>
+    </div>
+  </div>
+
   <!-- Transfer Progress Modal (live move / copy progress) -->
   <div class="modal-backdrop" id="modal-transfer-progress">
     <div class="modal-card" style="max-width: 460px;">
@@ -1105,6 +1235,52 @@
   </div>
 
   <!-- Image Lightbox Modal -->
+  <!-- PDF Viewer Modal (PDF.js → canvas; PDFs must never reach the text editor) -->
+  <div class="modal-backdrop" id="modal-pdf-viewer">
+    <div class="modal-card modal-large"
+      style="max-width: 92vw; width: 920px; max-height: 92vh; background: rgba(10,15,25,0.97);">
+      <div class="modal-header">
+        <h3 class="modal-title" id="pdfv-title"><i data-lucide="file-text"></i> Document</h3>
+        <button class="btn btn-secondary btn-icon modal-close pdfv-dismiss"><i data-lucide="x"></i></button>
+      </div>
+
+      <div
+        style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--border-glass);">
+        <button class="btn btn-secondary btn-icon btn-sm" id="pdfv-prev" title="Previous page (←)"><i
+            data-lucide="arrow-left"></i></button>
+        <span style="font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; gap: 6px;">
+          <input type="text" id="pdfv-page-input" value="1" inputmode="numeric" autocomplete="off" spellcheck="false"
+            style="width: 46px; text-align: center; padding: 4px 6px; background: var(--bg-tertiary); border: 1px solid var(--border-glass); border-radius: var(--radius-sm); color: #fff; font-size: 0.8rem;">
+          / <span id="pdfv-page-count">–</span>
+        </span>
+        <button class="btn btn-secondary btn-icon btn-sm" id="pdfv-next" title="Next page (→)"><i
+            data-lucide="arrow-right"></i></button>
+
+        <span style="width: 1px; height: 20px; background: var(--border-glass); margin: 0 4px;"></span>
+
+        <button class="btn btn-secondary btn-sm" id="pdfv-zoom-out" title="Zoom out">−</button>
+        <span id="pdfv-zoom-label"
+          style="font-size: 0.78rem; color: var(--text-muted); min-width: 46px; text-align: center;">100%</span>
+        <button class="btn btn-secondary btn-sm" id="pdfv-zoom-in" title="Zoom in">+</button>
+        <button class="btn btn-secondary btn-sm" id="pdfv-fit" title="Fit the page to the window width">Fit width</button>
+
+        <span style="margin-left: auto; display: flex; gap: 8px;">
+          <button class="btn btn-secondary btn-sm" id="pdfv-newtab" title="Open in the browser's own PDF viewer"><i
+              data-lucide="maximize"></i> Open in tab</button>
+          <button class="btn btn-secondary btn-sm" id="pdfv-download"><i data-lucide="download"></i> Download</button>
+        </span>
+      </div>
+
+      <div class="modal-body" id="pdfv-scroll"
+        style="overflow: auto; max-height: 68vh; background: rgba(0,0,0,0.35); padding: 16px; text-align: center;">
+        <canvas id="pdfv-canvas"
+          style="display: inline-block; max-width: 100%; background: #fff; border-radius: 4px; box-shadow: 0 8px 30px rgba(0,0,0,0.5);"></canvas>
+        <div id="pdfv-status"
+          style="display: none; padding: 48px 20px; font-size: 0.85rem; color: var(--text-muted); line-height: 1.6;"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="modal-lightbox">
     <div class="modal-card modal-large" style="max-width: 90vw; max-height: 90vh; background: rgba(10,15,25,0.95);">
       <div class="modal-header">
@@ -1148,6 +1324,7 @@
   <script src="js/folder_picker.js"></script>
   <script src="js/dashboard.js"></script>
   <script src="js/file_manager.js"></script>
+  <script src="js/pdf_viewer.js"></script>
   <script src="js/download_manager.js"></script>
   <script src="js/terminal.js"></script>
   <script src="js/media_player.js"></script>

@@ -8,6 +8,8 @@ class FileManagerView {
     this.selectedPaths = new Set();
     this.viewMode = 'grid'; // 'grid' | 'list'
     this.editingFilePath = null;
+    this._justDragged = false;
+    this._dragState = { active: false, potential: false, startX: 0, startY: 0, box: null };
 
     // Rename + move/copy destination-picker state
     this.renameTargetPath = null;
@@ -154,6 +156,28 @@ class FileManagerView {
       this.updateBulkBar();
       this.renderFiles(this.currentFiles);
     });
+
+    // Select All / Select None buttons
+    document.getElementById('fm-select-all-btn')?.addEventListener('click', () => this.selectAll());
+    document.getElementById('fm-select-none-btn')?.addEventListener('click', () => this.selectNone());
+
+    // Keyboard shortcut: Ctrl/Cmd+A to select all
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        const active = document.activeElement;
+        if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return;
+        e.preventDefault();
+        this.selectAll();
+      }
+    });
+
+    // Grid drag selection
+    const gridEl = document.getElementById('fm-files-grid');
+    if (gridEl) {
+      gridEl.addEventListener('mousedown', (e) => this._onGridMouseDown(e));
+    }
+    document.addEventListener('mousemove', (e) => this._onGridMouseMove(e));
+    document.addEventListener('mouseup', (e) => this._onGridMouseUp(e));
   }
 
   setViewMode(mode) {
@@ -226,6 +250,9 @@ class FileManagerView {
         <div class="file-item-grid ${isSelected ? 'selected' : ''}" data-path="${f.path}"
           onclick="fileManager.onItemClick(event, '${f.path}', ${f.is_dir}, '${f.category}')"
           oncontextmenu="return fileManager.openItemMenu(event, '${f.path}', ${f.is_dir}, '${f.category}')">
+          <label class="file-item-checkbox-wrap" title="Select" onclick="event.stopPropagation();">
+            <input type="checkbox" class="file-item-checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation(); fileManager.toggleSelect('${f.path}');">
+          </label>
           <button class="fm-item-menu-btn" title="Actions"
             onclick="event.stopPropagation(); fileManager.openItemMenu(event, '${f.path}', ${f.is_dir}, '${f.category}')">
             <i data-lucide="more-vertical"></i>
@@ -288,6 +315,12 @@ class FileManagerView {
   }
 
   onItemClick(event, path, isDir, category) {
+    if (this._justDragged) {
+      this._justDragged = false;
+      event.stopPropagation();
+      event.preventDefault();
+      return;
+    }
     if (event.ctrlKey || event.metaKey) {
       this.toggleSelect(path);
       return;
@@ -430,6 +463,92 @@ class FileManagerView {
     this.renderFiles(this.currentFiles);
   }
 
+  selectAll() {
+    this.currentFiles.forEach(f => this.selectedPaths.add(f.path));
+    this.updateBulkBar();
+    this.renderFiles(this.currentFiles);
+  }
+
+  selectNone() {
+    this.selectedPaths.clear();
+    this.updateBulkBar();
+    this.renderFiles(this.currentFiles);
+  }
+
+  _onGridMouseDown(e) {
+    if (e.button !== 0) return;
+    if (e.target.closest('.file-item-checkbox, .fm-item-menu-btn, button')) return;
+    if (this.viewMode !== 'grid') return;
+    this._dragState.potential = true;
+    this._dragState.active = false;
+    this._dragState.startX = e.clientX;
+    this._dragState.startY = e.clientY;
+  }
+
+  _onGridMouseMove(e) {
+    if (!this._dragState.potential && !this._dragState.active) return;
+    const dx = e.clientX - this._dragState.startX;
+    const dy = e.clientY - this._dragState.startY;
+    if (!this._dragState.active && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+      this._dragState.active = true;
+      this._dragState.potential = false;
+      if (!e.ctrlKey && !e.metaKey) {
+        this.selectedPaths.clear();
+        this.updateBulkBar();
+      }
+      if (!this._dragState.box) {
+        this._dragState.box = document.createElement('div');
+        this._dragState.box.className = 'fm-selection-box';
+        document.body.appendChild(this._dragState.box);
+      }
+      this._dragState.box.style.left = this._dragState.startX + 'px';
+      this._dragState.box.style.top = this._dragState.startY + 'px';
+      this._dragState.box.style.width = '0px';
+      this._dragState.box.style.height = '0px';
+      this._dragState.box.style.display = 'block';
+    }
+    if (!this._dragState.active) return;
+    const x = Math.min(e.clientX, this._dragState.startX);
+    const y = Math.min(e.clientY, this._dragState.startY);
+    const w = Math.abs(e.clientX - this._dragState.startX);
+    const h = Math.abs(e.clientY - this._dragState.startY);
+    this._dragState.box.style.left = x + 'px';
+    this._dragState.box.style.top = y + 'px';
+    this._dragState.box.style.width = w + 'px';
+    this._dragState.box.style.height = h + 'px';
+    const boxRect = this._dragState.box.getBoundingClientRect();
+    const items = document.querySelectorAll('.file-item-grid');
+    items.forEach(item => {
+      const itemRect = item.getBoundingClientRect();
+      const intersects = !(boxRect.right < itemRect.left || boxRect.left > itemRect.right || boxRect.bottom < itemRect.top || boxRect.top > itemRect.bottom);
+      const path = item.dataset.path;
+      if (intersects) {
+        item.classList.add('selected');
+        this.selectedPaths.add(path);
+      } else if (!e.ctrlKey && !e.metaKey) {
+        item.classList.remove('selected');
+        this.selectedPaths.delete(path);
+      }
+    });
+    this.updateBulkBar();
+  }
+
+  _onGridMouseUp(e) {
+    if (this._dragState.potential) {
+      this._dragState.potential = false;
+      return;
+    }
+    if (!this._dragState.active) return;
+    this._dragState.active = false;
+    this._dragState.potential = false;
+    if (this._dragState.box) {
+      this._dragState.box.style.display = 'none';
+    }
+    this._justDragged = true;
+    setTimeout(() => { this._justDragged = false; }, 0);
+    this.renderFiles(this.currentFiles);
+  }
+
   updateBulkBar() {
     const bar = document.getElementById('fm-bulk-bar');
     const countEl = document.getElementById('fm-bulk-count');
@@ -460,7 +579,12 @@ class FileManagerView {
       document.getElementById('lightbox-title').textContent = path.split('/').pop();
       document.getElementById('lightbox-img').src = rawUrl;
       app.openModal('modal-lightbox');
-    } else if (category === 'text' || category === 'pdf') {
+    } else if (category === 'pdf') {
+      // NEVER the text editor: a PDF is binary, so it rendered as raw
+      // "%PDF-1.3 / stream …" bytes in an editable box whose Save button would
+      // have corrupted the file.
+      pdfViewer.open(path);
+    } else if (category === 'text') {
       try {
         const data = await api.readFile(path);
         this.editingFilePath = path;
@@ -787,13 +911,9 @@ class FileManagerView {
 
   // ---- Live transfer progress (move / copy) ----
 
-  /** Human-readable byte size (binary units, matching the backend). */
+  /** Human-readable byte size — see formatSize() in api.js. */
   formatBytes(bytes) {
-    if (!bytes || bytes <= 0) return '0 B';
-    const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-    const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-    const val = bytes / Math.pow(1024, i);
-    return `${val >= 100 || i === 0 ? Math.round(val) : val.toFixed(1)} ${units[i]}`;
+    return formatSize(bytes);
   }
 
   formatEta(seconds) {

@@ -6,13 +6,14 @@
 
 ## 🌟 Key Features
 
-- 📊 **Real-Time System & Drive Telemetry**: Live storage consumption, read/write IOPS, MB/s bandwidth, per-core CPU load, RAM allocation, and S.M.A.R.T. temperature health watchdog over WebSockets.
+- 📊 **Real-Time System & Drive Telemetry**: Live storage consumption, read/write IOPS, MB/s bandwidth, per-core CPU load, RAM allocation, and S.M.A.R.T. temperature health watchdog over WebSockets. Drives that can't report a temperature say [why](#-why-a-drive-says-no-smart-instead-of-a-temperature) — spun down, no S.M.A.R.T. at all, or a controller refusing pass-through — instead of a blank reading.
 - 🗂️ **Interactive Web File Manager**: Full-featured file browser with breadcrumb navigation, dual view (Grid & List), file creation, search, rename, move, copy, deletion, and batch ZIP archive downloads.
 - 💻 **Embedded Web Terminal Shell Widget**: Execute safe Linux/Unix file management commands (`ls`, `ll`, `cd`, `mkdir`, `mv`, `cp`, `rm`, `cat`, `echo`, `touch`, `du`, `stat`, `df`, `top`, `free`, `diskpulse`) directly from your browser with ANSI color output.
 - ⚡ **High-Speed Multi-Engine Downloader**: Download HTTP/HTTPS URLs, video & media links from **1,800+ sites** — YouTube, Instagram, X/Twitter, Facebook, Vimeo, Dailymotion, TikTok, Crunchyroll & more (via `yt-dlp`), and Magnet/Torrent links (natively powered by `libtorrent` on Windows & Linux or optional Aria2) with live speed monitoring, pause/resume, and automatic **type-folder organization** into a destination you choose (a **Browse** picker or the one-tap **Backup** shortcut). Pick exact **video quality** (up to 4K) or extract **audio** (MP3/M4A/Opus/FLAC/WAV) with a "Fetch formats" preview, resilient anti-bot handling (player-client rotation + browser-cookie auth), and a one-click in-app **yt-dlp updater**. Sites that require a login (Instagram, X, Facebook) reuse your signed-in browser's cookies; DRM-protected streams (e.g. Crunchyroll premium) can't be saved.
-- 🚀 **NAS Network & Internet Speed Test**: Real-time throughput benchmark for Download Mbps, Upload Mbps, Ping latency, and ISP / datacenter detection — one-click, powered by Cloudflare's global speed edge (no external CLI required).
-- 📤 **Drag-and-Drop Multi-Device Uploader**: Upload individual files **or entire folders** with real-time queue tracking and instant Mobile QR Pairing for phone-to-NAS uploading. Choose any destination with a **Browse** folder-picker (or the one-tap **Backup** shortcut), and let DiskPulse auto-sort uploads into type folders — or toggle sorting off to keep a folder's original structure.
+- 🚀 **NAS Network & Internet Speed Test**: Real-time throughput benchmark for Download Mbps, Upload Mbps, Ping latency, and ISP / datacenter detection — one-click, powered by Cloudflare's global speed edge (no external CLI required). Every run also [charts](#-what-the-speed-test-charts-show) the live transfer curve, per-probe latency against its median with jitter and packet loss, and the last 30 runs so you can see a link degrade over time.
+- 📤 **Drag-and-Drop Multi-Device Uploader**: Upload individual files **or entire folders** (drag a folder in, or use **Add folder**) with real-time queue tracking and instant Mobile QR Pairing for phone-to-NAS uploading. Choose any destination with a **Browse** folder-picker or the one-tap **Backup** shortcut. Loose files can auto-sort into type folders; whole folders always upload intact with their structure preserved.
 - 🎬 **In-Browser Web Media Player**: High-fidelity audio player with animated canvas waveform visualizer, plus a streaming video player with **audio-track switching** (dual-audio MKV), **embedded & external subtitles** (SRT/ASS/VTT sidecars), and **playback-speed** controls. Powered by `ffmpeg`/`ffprobe` on the server (see [install notes](#web-media-player--dual-audio--subtitles-ffmpeg) below).
+- 📄 **In-Browser PDF Preview**: Click any PDF to read it in place — page navigation, zoom, fit-to-width, and open-in-new-tab, rendered to a canvas by [PDF.js](https://mozilla.github.io/pdf.js/). The library is fetched lazily on first use and can be [vendored locally](#offline-pdf-previews) for offline installs.
 - 🐍 **Python FastAPI Standalone Server**: Built-in 1-click NAS package generator for Docker Compose, TrueNAS SCALE, Synology DSM 7, and Systemd services.
 
 ---
@@ -22,12 +23,82 @@
 Both the **uploader** and the **download manager** share one organizing scheme, so files land in the same place no matter how they arrive.
 
 - **Pick a destination.** Use the **Browse** button to walk your storage tree and select (or create) any folder, or tap **Backup** for a one-click `Backup/` destination. Leave it empty to use the storage root (uploads) or the `Downloads/` bucket (downloads).
-- **Sort into type folders** (on by default). Each file is dropped into a subfolder by kind — **Images, Video, Audio, Documents, Archives, Disk Images, Programs**, and **Other** for anything unmatched — nested inside the destination you chose.
-- **Toggle it off** to keep structure instead: uploading a whole folder preserves its original layout, and downloads use the classic category subfolder.
+- **Sort into type folders** (on by default). Individual files are dropped into a subfolder by kind — **Images, Video, Audio, Documents, Archives, Disk Images, Programs**, and **Other** for anything unmatched — nested inside the destination you chose. Uncheck the toggle to drop them in as-is.
+- **Whole folders are never split up.** Drag a folder onto the drop zone (or use **Add folder**) and it uploads intact — every subfolder and file keeps its original layout, with no type classification inside. Folders land in `Backup/` unless you pick another destination. A review dialog first shows the folder name, file count, total size and exact destination, with an expandable file list, so nothing is queued until you confirm.
 
 Torrents (usually multi-file bundles) stay together in the destination rather than being split across type folders, and video/audio downloads bucket into **Video** / **Audio**.
 
+> **Tip:** using **Add folder** makes the browser show its own *"Upload N files to this site?"* prompt — that one is drawn by Chrome/Edge and can't be styled or skipped by a web page. **Dragging** the folder onto the drop zone bypasses it entirely and goes straight to DiskPulse's own review dialog.
+
 > **Note:** with sorting on by default, finished downloads now land in `Downloads/<Type>/` (e.g. `Downloads/Video/`) rather than the older `downloads/<category>/` layout.
+
+---
+
+## 📄 PDF Preview
+
+Click a PDF in the file manager and it opens in an in-app viewer — page navigation, a page-number box, zoom in/out, fit-to-width, download, and a button that hands the file to the browser's own viewer in a new tab. Nothing is converted or rasterized on the server: the file is streamed from `/api/files/raw` (served inline as `application/pdf`) and rendered to a canvas in the browser by [PDF.js](https://mozilla.github.io/pdf.js/).
+
+### Offline PDF previews
+
+PDF.js is fetched lazily the first time you open a PDF — it's roughly 1 MB, so it costs nothing until you need it — from the first source that answers:
+
+1. a local copy in `frontend/vendor/pdfjs/`, which needs no internet at all
+2. jsDelivr
+3. cdnjs
+
+A source that 404s or stalls is abandoned and the next one is tried. If every source fails, the viewer falls back to a button that opens the PDF in the browser's built-in viewer, which needs no JavaScript at all — so previews degrade rather than break on an offline box.
+
+For an air-gapped install, drop `pdf.min.js` and `pdf.worker.min.js` into `frontend/vendor/pdfjs/`, pinned to version **3.11.174** — the last PDF.js release that ships a classic `<script>` build (4.x is ESM-only and won't load here). Full instructions, including `npm pack` and `curl` recipes, are in [`frontend/vendor/pdfjs/README.md`](frontend/vendor/pdfjs/README.md). No code changes are needed; `[pdf] PDF.js loaded from vendored` in the browser console confirms the local copy won.
+
+---
+
+## 📏 How Sizes and Uptime Are Displayed
+
+Every byte count in DiskPulse picks its own unit from its magnitude, so a 64 MB folder and an 8 TB pool each read naturally instead of one being padded out in the other's unit. Sizes are labelled **B / KB / MB / GB / TB** and computed in binary (1024 per step), which is what Windows Explorer, most NAS appliances and `ls -lh` all report — a 1 TB drive therefore shows as roughly `932 GB`, matching what your operating system tells you. A decimal place is kept only below 10, so `4.0 KB` stays precise while `932 GB` stays short.
+
+Host uptime reads as hours and minutes — `3h 42m` — and folds in days once it passes 24 hours, as in `2d 4h 09m`. The sidebar shows used and total pool space beneath the usage bar; hover **Used** for the exact byte count, or **Total** for remaining free space and the storage root.
+
+The embedded terminal is the one deliberate exception: `ls -lh`, `du -h`, `df -h` and `free -h` print single-letter suffixes there (`1.4G`, `932G`, `4.0K`) because that is what the real coreutils do, and an emulated shell that disagreed with the real one would look broken.
+
+> **For contributors:** the formatting lives in exactly two places that mirror each other — `format_bytes` / `format_bytes_short` / `format_uptime` in [`backend/config.py`](backend/config.py), and `formatSize` / `formatUptime` in [`frontend/js/api.js`](frontend/js/api.js). Some numbers are rendered server-side (the `*_human` fields in the telemetry payload) and some client-side (live upload progress, chart tooltips), so if the two implementations drifted the same drive could read differently in two places on one screen. Change one, change the other, and route new size strings through them rather than writing a fresh unit loop.
+
+---
+
+## 🌡️ Why a Drive Says "No S.M.A.R.T." Instead of a Temperature
+
+Not every disk will tell you how hot it is, and the reasons are unrelated to each other. A drive that has parked its heads to save power, a USB enclosure whose bridge chip won't forward ATA commands, a plain flash stick that has no S.M.A.R.T. data to forward in the first place, a SATA controller left in RAID mode, and a machine with no `smartmontools` installed all used to collapse into the same unhelpful `Temp N/A`. That single label sent people hunting for a hardware fault when nothing was wrong — and, worse, suggested running as Administrator to somebody who already was.
+
+Each drive card now says which of those it is, so you can tell at a glance whether there is anything to fix:
+
+| Badge | What it means | Anything to do? |
+| --- | --- | --- |
+| `Asleep` | The disk is spun down and DiskPulse chose not to wake it | No — this is working as intended |
+| `No S.M.A.R.T.` | The device genuinely exposes no health data (most USB sticks and card readers), or its enclosure bridge won't pass the commands through | No, unless you expected pass-through from that enclosure |
+| `Needs admin` | The controller refused the pass-through. When DiskPulse is *not* elevated, restart it elevated; when it already is, this is a RAID/RST-mode controller or a bridge that won't forward ATA — switching the SATA controller to AHCI usually fixes it | Yes, fixable |
+| `No response` | The drive accepted the command but never answered before the timeout | Sometimes — a failing or badly bridged disk |
+| `Needs smartmontools` | The `smartctl` binary isn't installed, so capacity and model come from the OS but health cannot | Yes — install `smartmontools` |
+
+Sleeping disks are left asleep by default. Reading S.M.A.R.T. wakes a parked drive, and the dashboard refreshes every 30 seconds, so polling temperatures would stop an idle archive disk ever sleeping and add start/stop cycles it doesn't need. Set the environment variable `DISKPULSE_WAKE_DRIVES=1` before launching if you would rather have the temperature than the spin-down; those drives then read normally instead of `Asleep`.
+
+Temperature itself comes from whichever source the drive actually populates: `smartctl`'s decoded temperature block when present, otherwise S.M.A.R.T. attribute 194 (`Temperature_Celsius`) or 190 (`Airflow_Temperature_Cel`), which is where several Seagate and WD firmwares keep it. Warning thresholds follow the media type, because the two genuinely differ — spinning disks are flagged from 50 °C and solid-state from 65 °C.
+
+> **For contributors:** every failure path in [`backend/drive_health.py`](backend/drive_health.py) sets a `smart_reason` (`ok / asleep / no_permission / unsupported / usb_bridge / timeout / unreadable / no_tool`) and `smartctl`'s own `exit_status` and `messages[]` are what classify it — not guesswork on stderr text. A device that is known to exist is never dropped from the card just because it couldn't be read; it is kept and explained, which is why Windows enumerates from `Get-PhysicalDisk` (`/dev/pdN`) rather than `smartctl --scan-open`, whose output only includes devices it managed to open. Run **`python diagnose_drives.py`** on the affected machine for the per-device evidence — exact command, exit status, `smartctl`'s messages and which fields came back — and `python test_drive_health_smart.py` for the 108-check replay of the reference six-drive setup.
+
+---
+
+## 📶 What the Speed Test Charts Show
+
+A single "94 Mbps" tells you almost nothing about a link. The same average can come from a connection that ramps up cleanly and holds, or from one that spikes and stalls halfway through — and only the second one will ruin a video call. So alongside the download, upload, ping and ISP tiles, a run plots three things.
+
+**Throughput over time** traces the transfer itself, download then upload on one timeline. Each point is the rate over a 100 ms window rather than the running average, which matters: a cumulative average flattens out within a second or two and hides both the TCP slow-start ramp at the beginning and any dip in the middle. Watching the line while a test runs is also the quickest way to spot a link that only *looks* fast for its first megabyte.
+
+**Latency and jitter** draws every round-trip as a bar against a dashed median line. The gap between the two is jitter, calculated the standard way as the mean difference between consecutive round-trips in the order they arrived. A flat row of bars is a stable link; a ragged one is the connection that stutters on calls even though its average ping looks fine. Failed probes are counted rather than skipped, so packet loss appears in the summary instead of quietly improving the numbers.
+
+**Recent runs** keeps the last 30 results on disk and charts the most recent 12, with throughput as bars and ping as a line on its own axis. The useful question over time is whether a drop in speed arrived together with a rise in latency — congestion — or without one, which points at the link's capacity instead. Because history is written to disk, it survives restarts and is often the fastest way to answer "was it always this slow?".
+
+While a test runs, the badge and progress bar name the current stage — connecting, ping, download, upload — so a ~25 second run doesn't look like one unexplained wait. A run that can't reach the edge says so instead of reporting a number: the charts and tiles go blank and the badge reads `TEST ERROR`, rather than leaving the previous run's figures on screen where they'd read as a fresh measurement.
+
+> **For contributors:** the measurement lives in [`backend/speedtest_service.py`](backend/speedtest_service.py). `ThroughputRecorder` emits per-window samples during both transfers (upload is sent as a chunked body generator so it can be sampled mid-flight), `_measure_latency` returns every round-trip rather than just the median, and `get_status()` exposes `live` (phase, progress, in-flight samples) next to `latest` and `history` — all three as copies, since the worker thread is still writing to them. History is persisted to `speedtest_history.json` beside the config file, capped at 30 runs, and per-sample arrays are deliberately *not* stored there. Two rules are easy to break by accident: the 50/25 Mbps figures in the sizing code are only used to pick a payload size and must never be reported as a measurement, and a probe on a connection that hasn't yet paid for its TCP+TLS handshake is discarded — including the probe right after a reconnect, or one lost packet inflates jitter by an order of magnitude. The dashboard re-reads a running test every 500 ms as a self-rescheduling chain (not `setInterval`, which lets slow responses land out of order and rewind the chart); charts are updated in place with `update('none')`, never rebuilt. Verify with `python test_speedtest_charts.py` (151 checks, fakes the network seam) and `node test_speedtest_ui.js` (80 checks, runs the real renderers against idle / mid-run / completed / failed / hostile payloads).
 
 ---
 
@@ -185,7 +256,7 @@ python run.py
 
 > Windows' built-in storage cmdlets only report temperature & power-on hours for **NVMe** drives, so `smartmontools` is what unlocks those metrics on **SATA and USB** disks. Without it (or without Administrator), the cards still show the real model, capacity and media type — temperature and power-on hours simply display `N/A`.
 
-> ✅ **Confirmed on Windows:** after running `winget install smartmontools` and launching DiskPulse from an **elevated** PowerShell, the drive cards populate **temperature, power-on hours and wear** for SATA and USB disks — not just NVMe. If temps still show `N/A`, you either skipped the install or aren't running as Administrator.
+> ✅ **Confirmed on Windows:** after running `winget install smartmontools` and launching DiskPulse from an **elevated** PowerShell, the drive cards populate **temperature, power-on hours and wear** for SATA and USB disks — not just NVMe. If a drive still shows no temperature after that, the card now names the reason on the drive itself — spun down, no S.M.A.R.T. to read, or a controller refusing pass-through — rather than leaving you to guess; see [Why a drive says "No S.M.A.R.T." instead of a temperature](#-why-a-drive-says-no-smart-instead-of-a-temperature).
 
 #### Video / media downloads — YouTube, Dailymotion & 1,800+ sites (optional)
 
@@ -298,11 +369,14 @@ DiskPulseNAS/
 │   ├── index.html             # Single-Page Application interface
 │   ├── css/
 │   │   └── styles.css         # Glassmorphic dark design system
+│   ├── vendor/
+│   │   └── pdfjs/             # Optional local PDF.js copy (offline previews)
 │   └── js/
 │       ├── api.js             # REST client & WebSocket manager
 │       ├── folder_picker.js   # Reusable storage folder-picker (uploads + downloads)
 │       ├── dashboard.js       # Chart.js telemetry charts & gauges
 │       ├── file_manager.js    # Interactive file manager controller
+│       ├── pdf_viewer.js      # PDF.js canvas preview (lazy-loaded, offline-capable)
 │       ├── download_manager.js# Download manager & speed rate visualizer
 │       ├── terminal.js        # Terminal UI & ANSI renderer
 │       ├── media_player.js    # Audio/Video player & visualizer

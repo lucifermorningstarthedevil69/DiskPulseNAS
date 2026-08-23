@@ -16,6 +16,7 @@ telemetry WebSocket ticks once per second and shelling out to PowerShell /
 smartctl on every tick would be far too expensive (and would block the event
 loop). Callers just get the most recent snapshot instantly.
 """
+import concurrent.futures as futures
 import json
 import os
 import platform
@@ -24,14 +25,10 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import psutil
-
-try:
-    import humanize
-except Exception:  # pragma: no cover
-    humanize = None
+from backend.config import format_bytes
 
 _SYSTEM = platform.system()
 _IS_WINDOWS = _SYSTEM == "Windows"
@@ -67,15 +64,7 @@ def _to_float(val: Any) -> Optional[float]:
 def _human_size(nbytes: Optional[int]) -> str:
     if not nbytes:
         return "—"
-    if humanize:
-        return humanize.naturalsize(nbytes, binary=True)
-    # crude fallback
-    val = float(nbytes)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
-        if val < 1024 or unit == "PiB":
-            return f"{val:.1f} {unit}"
-        val /= 1024
-    return f"{nbytes} B"
+    return format_bytes(nbytes)
 
 
 def _temp_status(temp: Optional[float], is_ssd: bool) -> str:
@@ -117,6 +106,23 @@ def _ata_surface_penalty(reallocated: Optional[int], pending: Optional[int],
 
 def _run(cmd: List[str], timeout: float = 15.0) -> Optional[str]:
     """Run a command and return stdout, or None on any failure."""
+    return _run_full(cmd, timeout).stdout or None
+
+
+class _ProcResult(NamedTuple):
+    """What actually happened when we shelled out — not just the stdout.
+
+    ``smartctl`` communicates the *reason* a read failed through its exit code
+    and stderr, so throwing those away is what left the dashboard unable to tell
+    "this drive is asleep" apart from "this drive has no S.M.A.R.T. at all".
+    """
+    stdout: str
+    stderr: str
+    returncode: Optional[int]
+    timed_out: bool
+
+
+def _run_full(cmd: List[str], timeout: float = 15.0) -> _ProcResult:
     try:
         proc = subprocess.run(
             cmd,
@@ -125,11 +131,153 @@ def _run(cmd: List[str], timeout: float = 15.0) -> Optional[str]:
             timeout=timeout,
             creationflags=_CREATE_NO_WINDOW,
         )
-        if proc.stdout:
-            return proc.stdout
-        return None
+        return _ProcResult(proc.stdout or "", proc.stderr or "", proc.returncode, False)
+    except subprocess.TimeoutExpired as exc:
+        # A killed process can still have written useful JSON before the deadline.
+        out = exc.stdout or ""
+        err = exc.stderr or ""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        return _ProcResult(out, err, None, True)
     except Exception:
-        return None
+        return _ProcResult("", "", None, False)
+
+
+# ──────────────────── why a S.M.A.R.T. read produced nothing ──────────────────
+
+# smartctl's exit code is a bitmask (see RETURN VALUES in smartctl(8)). Bits 0-2
+# tell us whether the failure was our command line, opening the device, or the
+# device refusing the S.M.A.R.T. command itself.
+_SMART_BIT_CMDLINE = 0x01
+_SMART_BIT_OPEN_FAILED = 0x02
+_SMART_BIT_SMART_FAILED = 0x04
+
+REASON_OK = "ok"
+REASON_ASLEEP = "asleep"
+REASON_NO_PERMISSION = "no_permission"
+REASON_UNSUPPORTED = "unsupported"
+REASON_USB_BRIDGE = "usb_bridge"
+REASON_TIMEOUT = "timeout"
+REASON_UNREADABLE = "unreadable"
+REASON_NO_TOOL = "no_tool"
+
+#: Operator-facing explanation per reason. Deliberately says what to *do*, and
+#: distinguishes "expected, nothing to fix" from "fixable".
+REASON_NOTES = {
+    REASON_ASLEEP: (
+        "Drive is spun down (standby). DiskPulse deliberately does not wake it — "
+        "polling would keep it awake permanently and add needless wear. "
+        "Temperature will appear once something reads from the drive."
+    ),
+    REASON_NO_PERMISSION: (
+        "S.M.A.R.T. pass-through was refused. Run DiskPulse as Administrator "
+        "(Windows) or with sudo (Linux) to read temperature and health."
+    ),
+    REASON_UNSUPPORTED: (
+        "This device exposes no S.M.A.R.T. data at all. Normal for USB flash "
+        "drives and card readers — there is nothing to fix."
+    ),
+    REASON_USB_BRIDGE: (
+        "The USB bridge in this enclosure did not pass S.M.A.R.T. through. "
+        "DiskPulse tried the common bridge types; this one needs an explicit "
+        "smartctl -d setting, or simply does not support it."
+    ),
+    REASON_TIMEOUT: (
+        "The drive did not answer in time — usually a spun-down disk that is "
+        "slow to wake. It should appear on a later refresh."
+    ),
+    REASON_UNREADABLE: (
+        "S.M.A.R.T. data could not be read from this drive."
+    ),
+    REASON_NO_TOOL: (
+        "Install smartmontools (e.g. `winget install smartmontools` on Windows, "
+        "`apt install smartmontools` on Linux) to show temperature, power-on "
+        "hours and detailed S.M.A.R.T. health on SATA and USB drives."
+    ),
+}
+
+
+def _classify_smart_read(proc: _ProcResult, info: Dict[str, Any]) -> str:
+    """Work out why a smartctl run yielded no usable S.M.A.R.T. data.
+
+    Reads smartctl's own self-report first (the JSON carries ``smartctl.messages``
+    and ``smartctl.exit_status``), then falls back to the exit bitmask and finally
+    to string matching on stderr.
+    """
+    if proc.timed_out:
+        return REASON_TIMEOUT
+
+    meta = (info.get("smartctl", {}) or {}) if isinstance(info, dict) else {}
+    messages = " ".join(
+        str((m or {}).get("string", "")) for m in (meta.get("messages") or [])
+        if isinstance(m, dict)
+    )
+    blob = f"{messages}\n{proc.stderr}".lower()
+
+    # Order matters: a standby drive also reports a failed S.M.A.R.T. command,
+    # so the specific causes have to be tested before the generic ones.
+    if "standby" in blob or "sleep mode" in blob or "spun down" in blob:
+        return REASON_ASLEEP
+    if ("permission denied" in blob or "operation not permitted" in blob
+            or "access is denied" in blob or "requires administrator" in blob
+            or "administrator privileges" in blob):
+        return REASON_NO_PERMISSION
+    if "unknown usb bridge" in blob or "unsupported usb bridge" in blob \
+            or "please specify device type" in blob:
+        return REASON_USB_BRIDGE
+    if ("smart support is: unavailable" in blob or "device lacks smart" in blob
+            or "not supported" in blob or "unavailable - device lacks" in blob):
+        return REASON_UNSUPPORTED
+
+    status = meta.get("exit_status")
+    if status is None:
+        status = proc.returncode
+    status = _to_int(status)
+    if status:
+        if status & _SMART_BIT_OPEN_FAILED:
+            # Opening failed with no clearer message: on Windows this is almost
+            # always elevation, on Linux a missing device node.
+            return REASON_NO_PERMISSION if _IS_WINDOWS else REASON_UNREADABLE
+        if status & _SMART_BIT_SMART_FAILED:
+            return REASON_UNSUPPORTED
+        if status & _SMART_BIT_CMDLINE:
+            return REASON_UNREADABLE
+
+    return REASON_UNREADABLE
+
+
+def _is_elevated() -> bool:
+    """Whether this process can actually issue S.M.A.R.T. pass-through commands."""
+    if _IS_WINDOWS:
+        try:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+    try:
+        return os.geteuid() == 0
+    except AttributeError:
+        return False
+
+
+def _reason_note(reason: Optional[str]) -> str:
+    """The operator-facing note for a reason, adjusted for our actual privileges.
+
+    Telling somebody who is *already* running as Administrator to run as
+    Administrator is the single most misleading thing this card used to do — it
+    sends them chasing a permission problem that doesn't exist. When we know we're
+    elevated, a refused pass-through means the controller or bridge won't do it.
+    """
+    reason = reason or REASON_UNREADABLE
+    if reason == REASON_NO_PERMISSION and _is_elevated():
+        return ("The disk controller refused the S.M.A.R.T. pass-through even though "
+                "DiskPulse is running elevated — typically a RAID/RST controller or a "
+                "USB bridge that doesn't forward ATA commands. Switching the SATA "
+                "controller to AHCI mode usually fixes it.")
+    return REASON_NOTES.get(reason, REASON_NOTES[REASON_UNREADABLE])
+
 
 
 def _find_smartctl() -> Optional[str]:
@@ -295,6 +443,9 @@ def _collect_windows_powershell() -> List[Dict[str, Any]]:
             "reallocated_sectors": None,
             "status": status,
             "serial": (item.get("SerialNumber") or "").strip() or None,
+            # Windows' own physical-disk index. smartctl addresses the same disk as
+            # /dev/pdN, so this is an exact key between the two tools.
+            "device_id": _to_int(item.get("DeviceId")),
             "data_source": "powershell",
         })
         drives.append(d)
@@ -303,6 +454,16 @@ def _collect_windows_powershell() -> List[Dict[str, Any]]:
 
 def _match_smart(base: Dict[str, Any], smart_drives: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Find the smartctl reading that corresponds to a PowerShell drive entry."""
+    # Exact match first: when we enumerated by /dev/pdN, both records carry the
+    # same Windows physical-disk index, so there is nothing to infer. This also
+    # matches drives whose SMART read failed — the serial/model fallbacks below
+    # can't, because a failed read has neither.
+    bid = _to_int(base.get("device_id"))
+    if bid is not None:
+        for s in smart_drives:
+            if _to_int(s.get("device_id")) == bid:
+                return s
+
     bser = _norm_serial(base.get("serial"))
     if bser:
         for s in smart_drives:
@@ -337,14 +498,14 @@ def _collect_windows() -> List[Dict[str, Any]]:
         # No smartmontools: leave a hint on drives that are missing thermal data.
         for d in base:
             if d.get("temperature_c") is None and not d.get("note"):
-                d["note"] = (
-                    "Install smartmontools for Windows (e.g. `winget install smartmontools`) "
-                    "to show temperature, power-on hours and detailed S.M.A.R.T. health on "
-                    "SATA/USB drives."
-                )
+                d["smart_reason"] = REASON_NO_TOOL
+                d["note"] = REASON_NOTES[REASON_NO_TOOL]
         return base
 
-    smart_drives = _collect_smartctl(smartctl_exe)
+    # Enumerate by Windows disk number rather than trusting smartctl's own scan,
+    # which skips anything it couldn't open at scan time.
+    smart_drives = _collect_smartctl_devices(smartctl_exe,
+                                             _windows_scan_devices(smartctl_exe, base))
     if not base:
         return smart_drives
     if not smart_drives:
@@ -353,22 +514,20 @@ def _collect_windows() -> List[Dict[str, Any]]:
     for d in base:
         match = _match_smart(d, smart_drives)
         if not match:
-            # smartmontools is installed but this disk didn't match any
-            # readable SMART device — typically a USB stick/enclosure that
-            # needs elevation or exposes no S.M.A.R.T. at all. Don't guess a
-            # health number; say what's missing instead.
+            # smartmontools is installed but this disk didn't match any SMART
+            # device at all. Don't guess a health number; say what's missing.
             if d.get("status") in ("Optimal", "OK"):
                 d["status"] = "Unknown"
                 d["health_percent"] = None
             if not d.get("note"):
-                d["note"] = ("No S.M.A.R.T. data for this drive. Run DiskPulse as "
-                             "Administrator (USB flash drives often expose no "
-                             "S.M.A.R.T. at all).")
+                d["smart_reason"] = REASON_UNREADABLE
+                d["note"] = _reason_note(REASON_UNREADABLE)
             continue
+
+        reason = match.get("smart_reason") or REASON_UNREADABLE
         enriched = False
         if match.get("temperature_c") is not None:
             d["temperature_c"] = match["temperature_c"]
-            d["temp_status"] = match["temp_status"]
             enriched = True
         if match.get("power_on_hours") is not None:
             d["power_on_hours"] = match["power_on_hours"]
@@ -376,13 +535,28 @@ def _collect_windows() -> List[Dict[str, Any]]:
         if match.get("reallocated_sectors") is not None:
             d["reallocated_sectors"] = match["reallocated_sectors"]
             enriched = True
-        if match.get("status") == "Unknown":
-            # smartctl saw the drive but couldn't read its SMART log (needs
-            # admin on this controller). Don't pretend we have a health %;
-            # keep a warning only if Windows itself raised one.
+        if match.get("device"):
+            d["device"] = match["device"]
+        d["smart_reason"] = reason
+
+        # Not every SSD reports its rotation rate, so smartctl can call a drive
+        # "Unknown" that Windows correctly knows is an SSD. Merge the two, then
+        # re-band the temperature — otherwise a card can read "SSD · 51 °C
+        # Warning" while using the stricter HDD thresholds it isn't subject to.
+        if d.get("media_type") in (None, "Unknown") and match.get("media_type") not in (None, "Unknown"):
+            d["media_type"] = match["media_type"]
+        if d.get("temperature_c") is not None:
+            d["temp_status"] = _temp_status(d["temperature_c"],
+                                            d.get("media_type") in ("SSD", "NVMe"))
+
+        if match.get("status") in ("Unknown", "Asleep"):
+            # smartctl reached the drive but couldn't read its SMART log. The
+            # reason from the probe says whether that's expected (a parked disk,
+            # a stick with no S.M.A.R.T.) or fixable, so pass it straight
+            # through instead of always blaming permissions.
             d["health_percent"] = None
             if d.get("status") in ("Optimal", "OK"):
-                d["status"] = "Unknown"
+                d["status"] = match["status"]
             if match.get("note"):
                 d["note"] = match["note"]
         else:
@@ -391,11 +565,11 @@ def _collect_windows() -> List[Dict[str, Any]]:
                 d["health_percent"] = match["health_percent"]
             if match.get("status") and match["status"] in ("Warning", "Failing"):
                 d["status"] = match["status"]
-        if match.get("device"):
-            d["device"] = match["device"]
+
         if enriched:
             d["data_source"] = "powershell+smartctl"
-            d.pop("note", None)
+            if reason == REASON_OK:
+                d.pop("note", None)
     return base
 
 
@@ -405,7 +579,10 @@ def _collect_linux() -> List[Dict[str, Any]]:
     drives: List[Dict[str, Any]] = []
     exe = _find_smartctl()
     if exe:
-        drives = _collect_smartctl(exe)
+        # Anything --scan reported is a real device, so keep a stub with the
+        # failure reason rather than dropping it from the card silently.
+        devices = [dict(d, keep_unreadable=True) for d in _smartctl_scan(exe)]
+        drives = _collect_smartctl_devices(exe, devices)
     if not drives:
         drives = _collect_linux_lsblk()
     return drives
@@ -426,156 +603,421 @@ def _smartctl_scan(exe: str = "smartctl") -> List[Dict[str, str]]:
     return []
 
 
-def _collect_smartctl(exe: str = "smartctl") -> List[Dict[str, Any]]:
-    drives: List[Dict[str, Any]] = []
-    devices = _smartctl_scan(exe)
-    for i, dev in enumerate(devices[:16]):
-        name = dev["name"]
-        dtype = dev.get("type")
-        cmd = [exe, "-a", "-j"]
-        if dtype:
-            cmd += ["-d", dtype]
-        cmd.append(name)
+def _windows_scan_devices(exe: str, base: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Device list for Windows, keyed to PowerShell's physical-disk numbering.
 
-        # Some controllers return an incomplete identity on the first pass
-        # (drive still spun down, non-admin permission quirks), so retry once
-        # before giving up on the device.
-        info: Dict[str, Any] = {}
-        for _attempt in range(2):
-            raw = _run(cmd, timeout=12.0)
-            if not raw:
-                continue
-            try:
-                info = json.loads(raw)
-            except (ValueError, json.JSONDecodeError):
-                info = {}
-                continue
-            if info.get("model_name") or info.get("scsi_model_name") \
-                    or info.get("serial_number"):
-                break
+    `smartctl --scan` on Windows only lists devices it managed to open, so a disk
+    that was asleep or behind an unrecognized USB bridge at scan time never gets
+    probed at all — it just silently disappears from the health card. But smartctl
+    also accepts `/dev/pdN`, where N is the Windows physical drive number, which is
+    exactly `Get-PhysicalDisk`'s DeviceId. Enumerating from PowerShell therefore
+    gives an authoritative, complete list and an exact identity for each device,
+    with no serial/model guesswork needed to match the two tools up afterwards.
 
-        model = info.get("model_name") or info.get("scsi_model_name")
-        serial = info.get("serial_number")
-        # No identity at all means we couldn't actually read the device
-        # (perm denied) — nothing to show or to match a PowerShell entry with.
-        if not model and not serial:
+    Anything smartctl's own scan found that PowerShell didn't cover is appended, so
+    this can only ever add devices.
+    """
+    devices: List[Dict[str, Any]] = []
+    seen: set = set()
+    for d in base:
+        did = _to_int(d.get("device_id"))
+        if did is None:
             continue
-        if not model:
-            # Serial alone is still enough to match the drive later.
-            model = f"Unknown device ({serial})"
-
-        protocol = (info.get("device", {}) or {}).get("protocol", "") or ""
-        is_nvme = "nvme" in protocol.lower() or (info.get("device", {}) or {}).get("type") == "nvme"
-        rotation = _to_int(info.get("rotation_rate"))
-        if is_nvme:
-            media_type = "NVMe"
-        elif rotation == 0:
-            media_type = "SSD"
-        elif rotation:
-            media_type = "HDD"
-        else:
-            media_type = "Unknown"
-        is_ssd = media_type in ("SSD", "NVMe")
-
-        capacity = _to_int((info.get("user_capacity", {}) or {}).get("bytes")) or _to_int(info.get("nvme_total_capacity"))
-
-        temp = _to_float((info.get("temperature", {}) or {}).get("current"))
-        poh = _to_int((info.get("power_on_time", {}) or {}).get("hours"))
-        smart_status = info.get("smart_status", {}) or {}
-        passed = smart_status.get("passed")
-
-        reallocated = None
-        pending = None
-        uncorrectable = None
-        health_percent = None
-
-        nvme_log = info.get("nvme_smart_health_information_log")
-        if nvme_log:
-            if temp is None:
-                temp = _to_float(nvme_log.get("temperature"))
-            if poh is None:
-                poh = _to_int(nvme_log.get("power_on_hours"))
-            used = _to_float(nvme_log.get("percentage_used"))
-            if used is not None:
-                health_percent = max(0, min(100, int(round(100 - used))))
-
-        ata_attrs = ((info.get("ata_smart_attributes", {}) or {}).get("table")) or []
-        for attr in ata_attrs:
-            aid = attr.get("id")
-            aname = (attr.get("name") or "").lower()
-            raw_val = _to_int((attr.get("raw", {}) or {}).get("value"))
-            if aid == 5 or "reallocated_sector" in aname:
-                reallocated = raw_val
-            elif aid == 197 or "current_pending" in aname:
-                pending = raw_val
-            elif aid == 198 or "uncorrectable" in aname:
-                uncorrectable = raw_val
-            # SSD lifetime / wear indicators — normalized value ≈ % life remaining
-            if health_percent is None and (
-                aid in (177, 202, 231, 233) or "wear_leveling" in aname or "life" in aname
-            ):
-                nv = _to_int(attr.get("value"))
-                if nv is not None and 0 <= nv <= 100:
-                    health_percent = nv
-
-        surface_damage = bool((reallocated or 0) > 0 or (pending or 0) > 0
-                              or (uncorrectable or 0) > 0)
-
-        # Identity was readable but the SMART log itself was not (typically a
-        # non-admin process on a controller whose ATA pass-through needs
-        # elevation). Reporting "Optimal / 100%" here would be a guess — the
-        # drive must show as Unknown until the data can actually be read.
-        smart_unreadable = passed is None and not ata_attrs and not nvme_log
-
-        if smart_unreadable:
-            health_percent = None
-            status = "Unknown"
-            note = ("S.M.A.R.T. data could not be read from this drive "
-                    "(usually requires Administrator rights on this "
-                    "controller). Run DiskPulse as Administrator to see "
-                    "health, temperature and sector counts.")
-        else:
-            note = None
-            if health_percent is None:
-                if passed is False:
-                    health_percent = 20
-                else:
-                    # HDDs (and SSDs with no readable lifetime attribute) have
-                    # no wear figure. Derive health from the surface-damage
-                    # counters instead of claiming a flat 100% — a drive with
-                    # reallocated or pending sectors is exactly the one the
-                    # status line flags as "Warning", and the two numbers must
-                    # agree.
-                    penalty = _ata_surface_penalty(reallocated, pending, uncorrectable)
-                    health_percent = max(10, 100 - penalty)
-
-            if passed is True:
-                status = "Warning" if surface_damage else "Optimal"
-            elif passed is False:
-                status = "Failing"
-            else:
-                status = "OK"
-
-        d = _base_drive(f"drive_{i}_{name.replace('/', '_')}", model)
-        d.update({
-            "capacity_bytes": capacity,
-            "capacity_human": _human_size(capacity),
-            "media_type": media_type,
-            "interface": (protocol or "—"),
-            "health_percent": health_percent,
-            "temperature_c": round(temp, 1) if temp is not None else None,
-            "temp_status": _temp_status(temp, is_ssd),
-            "power_on_hours": poh,
-            "reallocated_sectors": reallocated,
-            "status": status,
-            "serial": serial,
-            "device": name,
-            "data_source": "smartctl",
+        name = f"/dev/pd{did}"
+        if name in seen:
+            continue
+        seen.add(name)
+        devices.append({
+            "name": name,
+            "type": None,
+            "device_id": did,
+            "model": d.get("model"),
+            # A device we know exists must never be dropped for being unreadable:
+            # the whole point is to report *why* it couldn't be read.
+            "keep_unreadable": True,
         })
-        if note:
-            d["note"] = note
-        drives.append(d)
+
+    for dev in _smartctl_scan(exe):
+        if dev.get("name") and dev["name"] not in seen:
+            seen.add(dev["name"])
+            devices.append(dict(dev))
+    return devices
+
+
+# ────────────────────── reading one device with smartctl ──────────────────────
+
+#: How long to let smartctl work on one device. A parked HDD can need 15-20s to
+#: spin up and answer, and the old 12s ceiling sat below that — which is how an
+#: idle disk got dropped from the list entirely while its busy neighbour reported
+#: fine. Probes run concurrently, so this ceiling costs wall time once overall
+#: rather than once per drive.
+_SMART_TIMEOUT = 40.0
+
+#: Tighter ceiling for the speculative USB bridge-type guesses, where a wrong
+#: guess should fail fast instead of eating the whole budget.
+_SMART_PROBE_TIMEOUT = 12.0
+
+#: Concurrent smartctl invocations — each is a separate short-lived subprocess.
+_SMART_WORKERS = 6
+
+#: Leave a spun-down disk spun down. smartd defaults the same way: waking a drive
+#: on every refresh would stop it ever sleeping and add pointless start/stop
+#: cycles. The cost is that a sleeping drive reports no live temperature, so we
+#: label it "Asleep" and show its last known reading instead of inventing one.
+#: Set DISKPULSE_WAKE_DRIVES=1 to always wake drives and get live temperatures.
+_WAKE_DRIVES = os.environ.get("DISKPULSE_WAKE_DRIVES", "").lower() in ("1", "true", "yes")
+
+#: USB enclosures need to be told how to pass S.M.A.R.T. through. These are the
+#: bridge types worth trying, most common first; plain USB flash sticks match
+#: none of them because they genuinely have no S.M.A.R.T. to expose.
+_USB_BRIDGE_TYPES = ("sat", "sat,12", "usbjmicron", "usbsunplus", "usbprolific", "scsi")
+
+#: Reasons where trying a different -d device type could plausibly help. A drive
+#: that is merely asleep or needs elevation will fail identically every time, so
+#: retrying it is wasted seconds.
+_RETRYABLE_REASONS = (REASON_USB_BRIDGE, REASON_UNSUPPORTED, REASON_UNREADABLE)
+
+
+class _SmartRead(NamedTuple):
+    info: Dict[str, Any]
+    reason: str
+    device_type: Optional[str]
+
+
+def _smart_read_once(exe: str, name: str, dtype: Optional[str],
+                     timeout: float, wake: bool) -> _SmartRead:
+    """One `smartctl -a -j` invocation, classified."""
+    cmd = [exe, "-a", "-j"]
+    if not wake:
+        # Exit rather than spinning an idle disk up just to read a sensor.
+        cmd += ["-n", "standby"]
+    if dtype:
+        cmd += ["-d", dtype]
+    cmd.append(name)
+
+    proc = _run_full(cmd, timeout)
+    info: Dict[str, Any] = {}
+    if proc.stdout:
+        try:
+            parsed = json.loads(proc.stdout)
+            if isinstance(parsed, dict):
+                info = parsed
+        except (ValueError, json.JSONDecodeError):
+            info = {}
+
+    if _smart_payload_usable(info):
+        return _SmartRead(info, REASON_OK, dtype)
+
+    reason = _classify_smart_read(proc, info)
+
+    # `-n standby` is not honoured by every smartctl build/transport; if the
+    # option itself was rejected, retry once without it rather than reporting a
+    # perfectly healthy drive as unreadable.
+    if not wake and reason == REASON_UNREADABLE:
+        meta = (info.get("smartctl", {}) or {})
+        status = _to_int(meta.get("exit_status"))
+        if status is not None and status & _SMART_BIT_CMDLINE:
+            return _smart_read_once(exe, name, dtype, timeout, wake=True)
+
+    return _SmartRead(info, reason, dtype)
+
+
+def _smart_payload_usable(info: Dict[str, Any]) -> bool:
+    """Did this response actually carry S.M.A.R.T. data (not just an identity)?"""
+    if not info:
+        return False
+    if info.get("ata_smart_attributes") or info.get("nvme_smart_health_information_log"):
+        return True
+    if (info.get("smart_status", {}) or {}).get("passed") is not None:
+        return True
+    if (info.get("temperature", {}) or {}).get("current") is not None:
+        return True
+    return False
+
+
+def _smart_read_device(exe: str, name: str, dtype: Optional[str] = None) -> _SmartRead:
+    """Read one device, escalating through USB bridge types when it makes sense."""
+    first = _smart_read_once(exe, name, dtype, _SMART_TIMEOUT, _WAKE_DRIVES)
+    if first.reason == REASON_OK or first.reason not in _RETRYABLE_REASONS:
+        return first
+
+    for cand in _USB_BRIDGE_TYPES:
+        if cand == dtype:
+            continue
+        attempt = _smart_read_once(exe, name, cand, _SMART_PROBE_TIMEOUT, _WAKE_DRIVES)
+        if attempt.reason == REASON_OK:
+            return attempt
+
+    # Nothing worked. Prefer the first attempt's reason: it came from the device's
+    # own declared type, so it describes the drive rather than a wrong guess.
+    return first
+
+
+def _temp_from_attributes(ata_attrs: List[Dict[str, Any]]) -> Optional[float]:
+    """Temperature from ATA attribute 194/190 when `temperature.current` is absent.
+
+    Not every drive populates smartctl's normalized temperature field, but almost
+    every ATA drive carries attribute 194 (Temperature_Celsius) or 190
+    (Airflow_Temperature_Cel). The raw value is awkward: some drives store the
+    plain reading, others pack min/max into the upper bytes, so we prefer the
+    string smartctl already decoded ("31 (Min/Max 20/45)") and fall back to
+    masking. Anything outside a plausible range is rejected rather than shown.
+    """
+    def plausible(val: Optional[float]) -> Optional[float]:
+        if val is None:
+            return None
+        return val if 1.0 <= val <= 120.0 else None
+
+    by_id: Dict[int, Dict[str, Any]] = {}
+    for attr in ata_attrs or []:
+        aid = _to_int(attr.get("id"))
+        aname = (attr.get("name") or "").lower()
+        if aid in (194, 190) or "temperature" in aname or "airflow_temp" in aname:
+            if aid is not None and aid not in by_id:
+                by_id[aid] = attr
+
+    for aid in (194, 190):
+        attr = by_id.get(aid)
+        if not attr:
+            continue
+        raw = attr.get("raw", {}) or {}
+
+        # smartctl's decoded string leads with the current reading.
+        match = re.match(r"\s*(\d+)", str(raw.get("string") or ""))
+        if match:
+            found = plausible(_to_float(match.group(1)))
+            if found is not None:
+                return found
+
+        value = _to_int(raw.get("value"))
+        if value is None:
+            continue
+        for candidate in (value, value & 0xFFFF, value & 0xFF):
+            found = plausible(float(candidate))
+            if found is not None:
+                return found
+    return None
+
+
+
+def _collect_smartctl(exe: str = "smartctl") -> List[Dict[str, Any]]:
+    return _collect_smartctl_devices(exe, _smartctl_scan(exe))
+
+
+def _collect_smartctl_devices(exe: str, devices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Read every device concurrently and parse each result.
+
+    Concurrency matters for correctness, not just speed: giving a parked HDD the
+    40s it may need to answer would otherwise serialize into minutes across six
+    drives, far beyond the cache TTL.
+    """
+    devices = [d for d in devices if d.get("name")][:16]
+    if not devices:
+        return []
+
+    reads: List[Optional[_SmartRead]] = [None] * len(devices)
+    if len(devices) == 1:
+        reads[0] = _smart_read_device(exe, devices[0]["name"], devices[0].get("type"))
+    else:
+        with futures.ThreadPoolExecutor(max_workers=min(_SMART_WORKERS, len(devices)),
+                                        thread_name_prefix="smartctl") as pool:
+            pending = {
+                pool.submit(_smart_read_device, exe, d["name"], d.get("type")): idx
+                for idx, d in enumerate(devices)
+            }
+            for fut in futures.as_completed(pending):
+                idx = pending[fut]
+                try:
+                    reads[idx] = fut.result()
+                except Exception:
+                    reads[idx] = _SmartRead({}, REASON_UNREADABLE, devices[idx].get("type"))
+
+    drives: List[Dict[str, Any]] = []
+    for i, dev in enumerate(devices):
+        read = reads[i] or _SmartRead({}, REASON_UNREADABLE, dev.get("type"))
+        parsed = _parse_smart_device(i, dev["name"], read, hint=dev)
+        if parsed:
+            drives.append(parsed)
     return drives
+
+
+def _parse_smart_device(i: int, name: str, read: _SmartRead,
+                        hint: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Turn one smartctl response into a drive record.
+
+    A failed read still produces a record. Dropping it (as this used to) meant the
+    drive silently lost its S.M.A.R.T. entry and the dashboard fell back to a
+    generic "run as Administrator" guess — even when the real cause was a
+    sleeping disk or a device with no S.M.A.R.T. at all.
+    """
+    info = read.info or {}
+    hint = hint or {}
+
+    model = info.get("model_name") or info.get("scsi_model_name")
+    serial = info.get("serial_number")
+
+    if read.reason != REASON_OK and not model and not serial:
+        # Nothing readable. Keep a stub so the drive can still be matched to its
+        # PowerShell entry and explained, rather than vanishing.
+        if not hint.get("keep_unreadable"):
+            return None
+        d = _base_drive(f"drive_{i}_{name.replace('/', '_')}",
+                        hint.get("model") or name)
+        d.update({
+            "device": name,
+            "device_id": hint.get("device_id"),
+            "status": "Asleep" if read.reason == REASON_ASLEEP else "Unknown",
+            "health_percent": None,
+            "smart_reason": read.reason,
+            "data_source": "smartctl",
+            "note": _reason_note(read.reason),
+        })
+        return d
+
+    if not model:
+        # Serial alone is still enough to match the drive later.
+        model = f"Unknown device ({serial})" if serial else (hint.get("model") or name)
+
+    protocol = (info.get("device", {}) or {}).get("protocol", "") or ""
+    is_nvme = "nvme" in protocol.lower() or (info.get("device", {}) or {}).get("type") == "nvme"
+    rotation = _to_int(info.get("rotation_rate"))
+    if is_nvme:
+        media_type = "NVMe"
+    elif rotation == 0:
+        media_type = "SSD"
+    elif rotation:
+        media_type = "HDD"
+    else:
+        media_type = "Unknown"
+    is_ssd = media_type in ("SSD", "NVMe")
+
+    capacity = _to_int((info.get("user_capacity", {}) or {}).get("bytes")) or _to_int(info.get("nvme_total_capacity"))
+
+    temp = _to_float((info.get("temperature", {}) or {}).get("current"))
+    poh = _to_int((info.get("power_on_time", {}) or {}).get("hours"))
+    smart_status = info.get("smart_status", {}) or {}
+    passed = smart_status.get("passed")
+
+    reallocated = None
+    pending = None
+    uncorrectable = None
+    health_percent = None
+
+    nvme_log = info.get("nvme_smart_health_information_log")
+    if nvme_log:
+        if temp is None:
+            temp = _to_float(nvme_log.get("temperature"))
+        if poh is None:
+            poh = _to_int(nvme_log.get("power_on_hours"))
+        used = _to_float(nvme_log.get("percentage_used"))
+        if used is not None:
+            health_percent = max(0, min(100, int(round(100 - used))))
+
+    ata_attrs = ((info.get("ata_smart_attributes", {}) or {}).get("table")) or []
+    for attr in ata_attrs:
+        aid = attr.get("id")
+        aname = (attr.get("name") or "").lower()
+        raw_val = _to_int((attr.get("raw", {}) or {}).get("value"))
+        if aid == 5 or "reallocated_sector" in aname:
+            reallocated = raw_val
+        elif aid == 197 or "current_pending" in aname:
+            pending = raw_val
+        elif aid == 198 or "uncorrectable" in aname:
+            uncorrectable = raw_val
+        # SSD lifetime / wear indicators — normalized value ≈ % life remaining
+        if health_percent is None and (
+            aid in (177, 202, 231, 233) or "wear_leveling" in aname or "life" in aname
+        ):
+            nv = _to_int(attr.get("value"))
+            if nv is not None and 0 <= nv <= 100:
+                health_percent = nv
+
+    # Older drives (and several Seagate/WD firmwares) don't populate smartctl's
+    # decoded `temperature.current` block at all, but still carry attribute 194
+    # or 190. Without this fallback those drives showed "Temp N/A" next to a
+    # perfectly healthy SMART log.
+    if temp is None:
+        temp = _temp_from_attributes(ata_attrs)
+    if temp is None:
+        temp = _to_float((info.get("scsi_environmental_reports", {}) or {})
+                         .get("temperature_1", {}).get("current"))
+
+    surface_damage = bool((reallocated or 0) > 0 or (pending or 0) > 0
+                          or (uncorrectable or 0) > 0)
+
+    # Identity was readable but the SMART log itself was not. That has several
+    # very different causes (a parked disk, a USB bridge with no pass-through, a
+    # stick with no S.M.A.R.T. at all), so the reason from the probe decides the
+    # wording. Reporting "Optimal / 100%" here would be a guess — the drive must
+    # show as Unknown until the data can actually be read.
+    smart_unreadable = passed is None and not ata_attrs and not nvme_log
+
+    if smart_unreadable:
+        health_percent = None
+        status = "Asleep" if read.reason == REASON_ASLEEP else "Unknown"
+        note = _reason_note(
+            read.reason if read.reason != REASON_OK else REASON_UNSUPPORTED)
+    else:
+        note = None
+        if health_percent is None:
+            if passed is False:
+                health_percent = 20
+            else:
+                # HDDs (and SSDs with no readable lifetime attribute) have
+                # no wear figure. Derive health from the surface-damage
+                # counters instead of claiming a flat 100% — a drive with
+                # reallocated or pending sectors is exactly the one the
+                # status line flags as "Warning", and the two numbers must
+                # agree.
+                penalty = _ata_surface_penalty(reallocated, pending, uncorrectable)
+                health_percent = max(10, 100 - penalty)
+
+        if passed is True:
+            status = "Warning" if surface_damage else "Optimal"
+        elif passed is False:
+            status = "Failing"
+        else:
+            status = "OK"
+
+    d = _base_drive(f"drive_{i}_{name.replace('/', '_')}", model)
+    d.update({
+        "capacity_bytes": capacity,
+        "capacity_human": _human_size(capacity),
+        "media_type": media_type,
+        "interface": (protocol or _interface_from_type(read.device_type) or "—"),
+        "health_percent": health_percent,
+        "temperature_c": round(temp, 1) if temp is not None else None,
+        "temp_status": _temp_status(temp, is_ssd),
+        "power_on_hours": poh,
+        "reallocated_sectors": reallocated,
+        "status": status,
+        "serial": serial,
+        "device": name,
+        "device_id": hint.get("device_id"),
+        "smart_reason": read.reason,
+        "data_source": "smartctl",
+    })
+    if note:
+        d["note"] = note
+    return d
+
+
+def _interface_from_type(device_type: Optional[str]) -> Optional[str]:
+    """Describe the transport when smartctl's `device.protocol` is missing.
+
+    The `-d` type we had to use is itself evidence: if `sat` or `usbjmicron` got
+    us in, the drive is behind a USB bridge.
+    """
+    if not device_type:
+        return None
+    dt = device_type.lower()
+    if dt.startswith("usb") or dt.startswith("sat"):
+        return "USB" if dt.startswith("usb") else "SATA"
+    if dt.startswith("nvme"):
+        return "NVMe"
+    if dt in ("scsi", "sas"):
+        return dt.upper()
+    return None
 
 
 def _linux_sensor_temps() -> Dict[str, List[float]]:
@@ -663,8 +1105,9 @@ def _collect_linux_lsblk() -> List[Dict[str, Any]]:
             "status": "OK",
             "serial": (bd.get("serial") or "").strip() or None,
             "device": f"/dev/{name}",
+            "smart_reason": REASON_NO_TOOL,
             "data_source": "lsblk",
-            "note": "Install smartmontools + run with sudo for temperature, health and power-on hours.",
+            "note": _reason_note(REASON_NO_TOOL),
         })
         drives.append(d)
     return drives
