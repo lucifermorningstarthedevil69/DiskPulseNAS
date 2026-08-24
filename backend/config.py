@@ -3,9 +3,18 @@ DiskPulse Configuration
 Reads from diskpulse_config.json if present, otherwise falls back to env vars / defaults.
 """
 import os
+import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# When bundled into a single-file executable by PyInstaller:
+# - sys._MEIPASS contains unpacked bundled assets (e.g. frontend/)
+# - sys.executable's parent is where the .exe lives (for configs/storage_pool)
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    BUNDLE_DIR = Path(sys._MEIPASS)
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BUNDLE_DIR = Path(__file__).resolve().parent.parent
+    BASE_DIR = BUNDLE_DIR
 
 # ── Load persisted config (written by setup wizard) ────────────────────────────
 def _load_persisted() -> dict:
@@ -30,7 +39,7 @@ HOST = os.environ.get("DISKPULSE_HOST", _persisted.get("app_host", "0.0.0.0"))
 PORT = int(os.environ.get("DISKPULSE_PORT", str(_persisted.get("app_port", 8000))))
 DEBUG = os.environ.get("DISKPULSE_DEBUG", "False").lower() in ("true", "1", "yes")
 
-FRONTEND_DIR = BASE_DIR / "frontend"
+FRONTEND_DIR = BUNDLE_DIR / "frontend"
 
 # ── Telemetry ──────────────────────────────────────────────────────────────────
 TELEMETRY_INTERVAL_SECS = 1.0

@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import psutil
-from backend.config import format_bytes
+from backend.config import format_bytes, BASE_DIR
 
-# Config file stored beside run.py
-BASE_DIR = Path(__file__).resolve().parent.parent
+# Config file stored beside executable / project root
 CONFIG_FILE = BASE_DIR / "diskpulse_config.json"
 
 DEFAULT_CONFIG = {
