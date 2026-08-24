@@ -2,6 +2,7 @@
 DiskPulse Configuration
 Reads from diskpulse_config.json if present, otherwise falls back to env vars / defaults.
 """
+import json
 import os
 import sys
 from pathlib import Path
