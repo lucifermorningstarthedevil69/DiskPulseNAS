@@ -12,6 +12,10 @@ python-multipart>=0.0.9
 yt-dlp[default]
 libtorrent
 torrentp
+pillow>=10.0.0
+pywebview>=5.0.0
+pystray>=0.19.5
+customtkinter>=5.2.0
 
 # Speed test uses Cloudflare's edge over the Python stdlib — no library needed.
 # For full drive S.M.A.R.T. metrics (temperature / power-on hours / health):

@@ -304,18 +304,41 @@ ffprobe -version
 > **Docker:** the `python:3.13-slim` image in the Compose example below does **not** include ffmpeg. Add it to the startup command — e.g. change the `command:` to `bash -c "apt-get update && apt-get install -y ffmpeg && pip install -r requirements.txt && python run.py"` — or bake `RUN apt-get update && apt-get install -y ffmpeg` into a custom image.
 
 ### 2. Install & Run
+
 ```bash
 # Clone or navigate to the repository
 cd DiskPulseNAS
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Start the DiskPulse server
-python run.py
 ```
 
-Open your browser at **[http://localhost:8000](http://localhost:8000)**.
+#### A. Web Server Mode (Terminal)
+```bash
+python run.py
+```
+Open your browser at **[http://localhost:8000](http://localhost:8000)** (press `Ctrl+C` to terminate).
+
+#### B. Desktop GUI & Standalone App (No Terminal Required)
+For end-users who prefer a graphical interface with clean one-click exit (no `Ctrl+C` or command line needed):
+
+**Windows Quick Start:** Double-click **`start_gui.bat`** (or run `python gui_launcher.py`).
+
+| Mode | Command | Description |
+| :--- | :--- | :--- |
+| **1. Native Desktop Window** *(Recommended)* | `python gui_launcher.py --mode window` | Opens DiskPulse in a dedicated desktop application window (powered by Windows WebView2). Closing the window cleanly shuts down the server. |
+| **2. System Tray App** | `python gui_launcher.py --mode tray` | Runs silently in the Windows taskbar tray (near the clock) and auto-opens your default browser. Right-click tray icon to open dashboard, storage folder, or exit. |
+| **3. Hybrid Window + Tray** | `python gui_launcher.py --mode hybrid` | Native desktop window with minimize-to-tray background support. |
+| **4. Desktop Control Panel** | `python gui_launcher.py --mode control-panel` | Sleek dark-themed desktop dashboard showing live server status, *Open Dashboard*, *Open Storage Folder*, *Diagnostics*, *Start/Stop*, and *Exit*. |
+
+#### C. Standalone Portable Executable (`DiskPulse.exe`)
+- **Local compilation:**
+  ```powershell
+  python build_exe.py
+  ```
+  The executable is generated at **`dist/DiskPulse.exe`**.
+- **Automated GitHub Releases:**
+  A GitHub Actions workflow is included in [`.github/workflows/release.yml`](.github/workflows/release.yml). Whenever you create a new GitHub release or push a tag (e.g. `v1.0.0`), GitHub automatically builds `DiskPulse.exe` and `DiskPulse-Windows-x64.zip` and attaches them directly to the release assets. You can also trigger the build manually from the **Actions** tab on GitHub.
 
 ---
 
@@ -351,44 +374,116 @@ docker compose up -d
 
 ---
 
+## 🧰 Tech Stack — Libraries, Tools & Frameworks
+
+DiskPulse is a **Python + vanilla-JavaScript** project with **no frontend build step and no Node.js requirement**. Everything below is either pinned in [`requirements.txt`](requirements.txt), loaded from a CDN at runtime, or invoked as an external binary.
+
+### Backend — Python 3.10+ (3.11 / 3.12 / 3.13 supported)
+
+| Library | Used for |
+| --- | --- |
+| **FastAPI** | Async web framework — every REST endpoint and WebSocket route in [`backend/main.py`](backend/main.py) |
+| **Uvicorn** | ASGI server that runs the app; [`run.py`](run.py) subclasses it to kill live ffmpeg streams on Ctrl+C before a graceful shutdown |
+| **Pydantic** | Request/response model validation |
+| **websockets** | WebSocket protocol for live telemetry and the interactive terminal |
+| **aiohttp** | Async HTTP client — direct HTTP downloads and the Aria2 JSON-RPC client |
+| **aiofiles** | Non-blocking file writes in the download engine |
+| **psutil** | Cross-platform CPU, RAM, disk I/O and partition telemetry |
+| **humanize** | Human-readable byte sizes |
+| **python-multipart** | Multipart form parsing for file uploads |
+| **yt-dlp[default]** | Video/media downloader for ~1,800 sites; the `[default]` extra bundles **curl_cffi** (browser TLS impersonation), **mutagen**, **pycryptodomex**, **brotli** and **websockets** |
+| **libtorrent** | Native BitTorrent / magnet engine on Windows & Linux (the active torrent backend) |
+| **torrentp** | Declared in `requirements.txt`; the native engine itself is `libtorrent` |
+
+> The **speed test** deliberately uses **no third-party package** — it speaks to Cloudflare's speed edge over the Python standard library (`http.client`, `ssl`, `socket`, `threading`).
+
+### External system tools (invoked as subprocesses)
+
+| Tool | Feature it powers | Required? |
+| --- | --- | --- |
+| **ffmpeg / ffprobe** | Media player — audio-track switching, embedded/external subtitles, thumbnails, on-the-fly remux/transcode | Optional — falls back to direct playback |
+| **smartmontools (`smartctl`)** | S.M.A.R.T. temperature, power-on hours and wear health | Optional — cards degrade to model/capacity only |
+| **Aria2** | Alternative torrent backend over JSON-RPC ([`backend/aria2_client.py`](backend/aria2_client.py)) | Optional — libtorrent is the default |
+| **Cloudflare speed edge** | Speed-test target (no `speedtest-cli` needed) | Internet access required |
+
+### Frontend — vanilla web platform (no framework, no bundler)
+
+| Library / asset | Source | Used for |
+| --- | --- | --- |
+| **Vanilla HTML5 / CSS3 / ES6+** | Hand-written SPA | The entire UI — no React/Vue/Angular, no build step |
+| **Chart.js v4** | jsDelivr CDN (pinned to major v4) | All telemetry, speed-test and history charts |
+| **Lucide Icons** | unpkg CDN | Icon set |
+| **QRCode.js 1.0.0** | cdnjs CDN | Mobile QR pairing for the uploader |
+| **PDF.js 3.11.174** | Lazy-loaded from jsDelivr/cdnjs, or vendored in [`frontend/vendor/pdfjs/`](frontend/vendor/pdfjs/) | In-browser PDF preview |
+| **Google Fonts** | fonts.googleapis.com | Inter + JetBrains Mono typefaces |
+| **Native browser APIs** | — | WebSocket, Canvas (audio waveform visualizer), Fetch, Drag & Drop, File API |
+
+### Deployment & packaging
+
+- **Docker** — `python:3.13-slim` base image ([`Dockerfile`](Dockerfile)) with a `curl` healthcheck; a **Docker Compose** example is included above.
+- **Built-in NAS Deployer** — generates ready-to-run packages for **Docker Compose, TrueNAS SCALE, Synology DSM 7** and **systemd** ([`backend/nas_generator.py`](backend/nas_generator.py)).
+
+### Testing
+
+- **Python `unittest`** (standard library) — `test_download_types.py`, `test_drive_health_smart.py`, `test_media_stream_cleanup.py`, `test_speedtest_charts.py`, `test_transfer_progress.py`.
+- **Plain Node.js script** — `test_speedtest_ui.js` runs the real frontend chart renderers against idle / mid-run / completed / failed / hostile payloads.
+- **`diagnose_drives.py`** — per-drive S.M.A.R.T. diagnostic CLI for troubleshooting health readings.
+
+---
+
 ## 📐 Architecture
 
 ```
 DiskPulseNAS/
 ├── backend/
-│   ├── config.py              # Configuration & storage pool settings
-│   ├── telemetry.py           # Real-time hardware & system metrics
-│   ├── drive_health.py        # Cross-platform real S.M.A.R.T. drive reader
-│   ├── speedtest_service.py   # Cloudflare network speed-test engine
+│   ├── config.py              # Configuration, storage pool & byte formatting
+│   ├── setup_manager.py       # First-run wizard state & drive detection
+│   ├── telemetry.py           # Real-time hardware & system metrics (psutil)
+│   ├── drive_health.py        # Cross-platform S.M.A.R.T. reader (smartctl)
+│   ├── speedtest_service.py   # Cloudflare speed-test engine (stdlib only)
 │   ├── file_manager.py        # Safe asynchronous filesystem operations
-│   ├── download_engine.py     # Multi-threaded async download worker
-│   ├── terminal_emulator.py   # Sandboxed Linux NAS terminal shell
-│   ├── nas_generator.py       # Synology/TrueNAS/Docker generator
+│   ├── download_engine.py     # Multi-engine download worker (HTTP/yt-dlp/torrent)
+│   ├── ytdlp_service.py       # yt-dlp subprocess wrapper & format probing
+│   ├── aria2_client.py        # Optional Aria2 JSON-RPC torrent client
+│   ├── media_service.py       # ffmpeg/ffprobe streaming, tracks & subtitles
+│   ├── terminal_emulator.py   # Sandboxed NAS terminal shell
+│   ├── nas_generator.py       # Docker/TrueNAS/Synology/systemd packager
 │   └── main.py                # FastAPI REST API & WebSocket endpoints
 ├── frontend/
-│   ├── index.html             # Single-Page Application interface
+│   ├── index.html             # Main single-page application shell
+│   ├── setup.html             # First-run setup wizard
 │   ├── css/
 │   │   └── styles.css         # Glassmorphic dark design system
 │   ├── vendor/
 │   │   └── pdfjs/             # Optional local PDF.js copy (offline previews)
 │   └── js/
 │       ├── api.js             # REST client & WebSocket manager
-│       ├── folder_picker.js   # Reusable storage folder-picker (uploads + downloads)
+│       ├── app.js             # Core application shell & navigation
 │       ├── dashboard.js       # Chart.js telemetry charts & gauges
 │       ├── file_manager.js    # Interactive file manager controller
+│       ├── folder_picker.js   # Reusable storage folder-picker (uploads + downloads)
 │       ├── pdf_viewer.js      # PDF.js canvas preview (lazy-loaded, offline-capable)
 │       ├── download_manager.js# Download manager & speed rate visualizer
 │       ├── terminal.js        # Terminal UI & ANSI renderer
 │       ├── media_player.js    # Audio/Video player & visualizer
 │       ├── uploader.js        # Drag & drop and mobile QR uploader
-│       ├── nas_generator.js   # 1-click NAS exporter UI
-│       └── app.js             # Core application shell & navigation
-├── storage_pool/              # Server storage directories & media
+│       └── nas_generator.js   # 1-click NAS exporter UI
+├── run.py                     # Primary launcher (Uvicorn + graceful shutdown)
 ├── generate_demo_data.py      # Demo seed files generator
-├── run.py                     # Primary launcher
-├── requirements.txt           # Dependencies
-└── Dockerfile                 # Container image build
+├── diagnose_drives.py         # Per-drive S.M.A.R.T. diagnostic CLI
+├── test_*.py / test_*.js      # unittest + Node.js test suites
+├── requirements.txt           # Python dependencies
+├── Dockerfile                 # Container image build
+└── storage_pool/              # Server storage directories & media
 ```
+
+### Request & data flow
+
+1. **Browser → FastAPI.** The SPA in `frontend/` talks to `backend/main.py` over plain **REST** (`/api/...`) for commands and file operations, and over two **WebSockets** — `/ws/telemetry` for the live metrics stream and `/ws/terminal` for the interactive shell.
+2. **Telemetry path.** `telemetry.py` samples `psutil` and merges in `drive_health.py`'s `smartctl` results, then pushes the combined payload down the telemetry WebSocket on an interval.
+3. **Download path.** `download_engine.py` routes each URL to one of three engines — `aiohttp`/`aiofiles` for direct HTTP, `ytdlp_service.py` (a `yt-dlp` subprocess) for media sites, and `libtorrent` (or the optional `aria2_client.py`) for magnets/torrents — and reports progress back over REST.
+4. **Media path.** `media_service.py` shells out to `ffprobe` for stream inspection and `ffmpeg` for remux/transcode, piping the result back as an HTTP streaming response.
+5. **External tools are isolated.** `ffmpeg`, `smartctl` and `yt-dlp` are all invoked as subprocesses, so each is optional — the feature it powers degrades gracefully when the binary is absent.
 
 ---
 
