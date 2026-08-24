@@ -40,15 +40,30 @@ def build():
 
     try:
         PyInstaller.__main__.run(args)
-        exe_path = BASE_DIR / "dist" / "DiskPulse.exe"
-        print("==================================================")
-        print(" [SUCCESS] Build completed successfully!")
-        print(f" Executable location: {exe_path}")
-        print("==================================================")
     except Exception as e:
         print("==================================================")
         print(f" [ERROR] Build failed: {e}")
         print("==================================================")
+        sys.exit(1)
+
+    exe_path = BASE_DIR / "dist" / "DiskPulse.exe"
+    if not exe_path.exists():
+        print("==================================================")
+        print(f" [ERROR] Build reported success but {exe_path} was not created")
+        print("==================================================")
+        sys.exit(1)
+
+    exe_size_mb = exe_path.stat().st_size / (1024 * 1024)
+    if exe_size_mb < 5:
+        print("==================================================")
+        print(f" [ERROR] {exe_path} is only {exe_size_mb:.2f} MB — build is likely broken")
+        print("==================================================")
+        sys.exit(1)
+
+    print("==================================================")
+    print(" [SUCCESS] Build completed successfully!")
+    print(f" Executable location: {exe_path} ({exe_size_mb:.1f} MB)")
+    print("==================================================")
 
 if __name__ == "__main__":
     build()
