@@ -787,6 +787,38 @@ body {
   box-shadow: 0 0 12px rgba(0, 242, 254, 0.2);
 }
 
+/* ---- Per-item checkbox (grid top-left) ---- */
+.file-item-checkbox-wrap {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.file-item-grid:hover .file-item-checkbox-wrap,
+.file-item-grid.selected .file-item-checkbox-wrap,
+.file-item-checkbox:checked,
+.file-item-checkbox-wrap:focus-within {
+  opacity: 1;
+}
+
+.file-item-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent-cyan);
+  border-radius: var(--radius-sm);
+  margin: 0;
+}
+
 /* ---- Per-item actions menu (grid ⋮ button / right-click) ---- */
 .fm-item-menu-btn {
   position: absolute;
