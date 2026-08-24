@@ -44,6 +44,7 @@ if sys.stdin is None:
 # Ensure multiprocessing support for PyInstaller frozen executables
 multiprocessing.freeze_support()
 
+import backend.main
 from backend.config import HOST, PORT, STORAGE_ROOT, BASE_DIR
 from backend.icon_utils import create_diskpulse_icon
 from backend.server_runner import BackgroundServer
@@ -155,7 +156,7 @@ def run_tray_mode(server: BackgroundServer):
 
 
 # ==============================================================================
-# MODE 3: HYBRID (NATIVE WINDOW + SYSTEM TRAY)
+# MODE 3: HYBRID (NATIVE WINDOW + SYSTEM TRAY) - DEFAULT
 # ==============================================================================
 def run_hybrid_mode(server: BackgroundServer):
     """Native WebView window with System Tray integration (minimize-to-tray)."""
@@ -172,7 +173,7 @@ def run_hybrid_mode(server: BackgroundServer):
     tray_holder = {"icon": None}
     window_holder = {"window": None, "closed": False}
 
-    def on_show_window(icon, _item):
+    def on_show_window(icon=None, _item=None):
         w = window_holder.get("window")
         if w:
             try:
@@ -181,17 +182,23 @@ def run_hybrid_mode(server: BackgroundServer):
             except Exception:
                 pass
 
-    def on_open_browser(icon, _item):
+    def on_open_browser(icon=None, _item=None):
         webbrowser.open(url)
 
-    def on_open_storage(icon, _item):
+    def on_open_storage(icon=None, _item=None):
         open_folder(STORAGE_ROOT)
 
-    def on_hybrid_exit(icon, _item):
-        print("[DiskPulse GUI] Exiting hybrid mode...")
+    def on_open_speedtest(icon=None, _item=None):
+        webbrowser.open(f"{url}#speedtest")
+
+    def on_hybrid_exit(icon=None, _item=None):
+        print("[DiskPulse GUI] Exiting DiskPulse...")
         window_holder["closed"] = True
         if icon:
-            icon.stop()
+            try:
+                icon.stop()
+            except Exception:
+                pass
         w = window_holder.get("window")
         if w:
             try:
@@ -199,13 +206,15 @@ def run_hybrid_mode(server: BackgroundServer):
             except Exception:
                 pass
         server.stop()
+        os._exit(0)
 
     menu = Menu(
-        item(f"DiskPulse NAS (Port {server.port})", None, enabled=False),
+        item(f"⚡ DiskPulse NAS (Port {server.port})", None, enabled=False),
         Menu.SEPARATOR,
         item("🖥️ Show Desktop Window", on_show_window, default=True),
         item("🌐 Open in Web Browser", on_open_browser),
         item("📁 Open Storage Pool Folder", on_open_storage),
+        item("⚡ Speed Test & Diagnostics", on_open_speedtest),
         Menu.SEPARATOR,
         item("❌ Exit DiskPulse", on_hybrid_exit),
     )
@@ -213,22 +222,26 @@ def run_hybrid_mode(server: BackgroundServer):
     tray_icon = pystray.Icon(
         name="DiskPulseHybrid",
         icon=icon_img,
-        title=f"DiskPulse NAS (Online - Port {server.port})",
+        title=f"DiskPulse NAS Storage Hub (Online - Port {server.port})",
         menu=menu,
     )
     tray_holder["icon"] = tray_icon
 
-    # Start tray in background thread
+    # Start system tray in background daemon thread
     tray_thread = threading.Thread(target=tray_icon.run, daemon=True)
     tray_thread.start()
 
     def on_window_closing():
         if not window_holder["closed"]:
-            # On window close, stop server and tray
-            print("[DiskPulse GUI] Window closed. Stopping server...")
-            if tray_holder["icon"]:
-                tray_holder["icon"].stop()
-            server.stop()
+            # Minimize/Hide to system tray instead of killing the NAS background services
+            print("[DiskPulse GUI] Window minimized to system tray.")
+            try:
+                w = window_holder.get("window")
+                if w:
+                    w.hide()
+                return False
+            except Exception:
+                pass
 
     window = webview.create_window(
         title="DiskPulse NAS Storage Hub",
@@ -245,9 +258,8 @@ def run_hybrid_mode(server: BackgroundServer):
     try:
         webview.start(private_mode=False)
     finally:
-        if tray_holder["icon"]:
-            tray_holder["icon"].stop()
-        server.stop()
+        if not window_holder["closed"]:
+            on_hybrid_exit(tray_holder.get("icon"))
 
 
 # ==============================================================================
@@ -554,8 +566,8 @@ def main():
     parser.add_argument(
         "--mode",
         choices=["window", "tray", "hybrid", "control-panel", "picker"],
-        default=None,
-        help="GUI mode to launch (default: interactive picker)",
+        default="hybrid",
+        help="GUI mode to launch (default: hybrid window + system tray)",
     )
     args = parser.parse_args()
 
@@ -565,12 +577,12 @@ def main():
         run_window_mode(server)
     elif args.mode == "tray":
         run_tray_mode(server)
-    elif args.mode == "hybrid":
-        run_hybrid_mode(server)
     elif args.mode == "control-panel":
         run_control_panel_mode(server)
-    else:
+    elif args.mode == "picker":
         run_interactive_selector(server)
+    else:
+        run_hybrid_mode(server)
 
 
 if __name__ == "__main__":

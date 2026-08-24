@@ -1,15 +1,97 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import sys
+from pathlib import Path
+
+BASE_DIR = Path.cwd()
+
+datas = [('frontend', 'frontend')]
+try:
+    import customtkinter
+    ctk_dir = os.path.dirname(customtkinter.__file__)
+    datas.append((ctk_dir, 'customtkinter'))
+except Exception:
+    pass
+
+hidden_imports = [
+    'backend',
+    'backend.main',
+    'backend.config',
+    'backend.telemetry',
+    'backend.file_manager',
+    'backend.download_engine',
+    'backend.terminal_emulator',
+    'backend.nas_generator',
+    'backend.setup_manager',
+    'backend.speedtest_service',
+    'backend.drive_health',
+    'backend.media_service',
+    'backend.ytdlp_service',
+    'backend.aria2_client',
+    'backend.icon_utils',
+    'backend.server_runner',
+    'generate_demo_data',
+    'uvicorn',
+    'uvicorn.logging',
+    'uvicorn.loops',
+    'uvicorn.loops.auto',
+    'uvicorn.loops.asyncio',
+    'uvicorn.protocols',
+    'uvicorn.protocols.http',
+    'uvicorn.protocols.http.auto',
+    'uvicorn.protocols.http.h11_impl',
+    'uvicorn.protocols.http.httptools_impl',
+    'uvicorn.protocols.websockets',
+    'uvicorn.protocols.websockets.auto',
+    'uvicorn.protocols.websockets.wsproto_impl',
+    'uvicorn.protocols.websockets.websockets_impl',
+    'uvicorn.lifespan',
+    'uvicorn.lifespan.on',
+    'uvicorn.lifespan.off',
+    'fastapi',
+    'fastapi.applications',
+    'fastapi.routing',
+    'fastapi.staticfiles',
+    'fastapi.middleware',
+    'fastapi.middleware.cors',
+    'starlette',
+    'starlette.applications',
+    'starlette.routing',
+    'starlette.middleware',
+    'starlette.middleware.cors',
+    'starlette.staticfiles',
+    'starlette.responses',
+    'multipart',
+    'multipart.multipart',
+    'pydantic',
+    'psutil',
+    'aiofiles',
+    'websockets',
+    'humanize',
+    'PIL',
+    'pystray',
+    'webview',
+    'customtkinter',
+    'darkdetect',
+]
 
 a = Analysis(
     ['gui_launcher.py'],
     pathex=[],
     binaries=[],
-    datas=[('frontend', 'frontend')],
-    hiddenimports=['uvicorn', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.on', 'fastapi', 'starlette', 'pydantic', 'psutil', 'aiofiles', 'websockets', 'humanize', 'PIL', 'pystray', 'webview', 'customtkinter'],
+    datas=datas,
+    hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pygments', 'IPython', 'ipykernel', 'matplotlib', 'scipy', 'pygame', 'jupyter', 'jupyter_client', 'jupyter_core', 'tkinter.test', 'unittest', 'django', 'flask', 'docker', 'dipy', 'h5py', 'nibabel', 'esphome', 'aioesphomeapi', 'zeroconf', 'cryptography', 'setuptools', 'distutils', 'pkg_resources'],
+    excludes=[
+        'pygments', 'IPython', 'ipykernel', 'matplotlib', 'scipy', 'pygame',
+        'jupyter', 'jupyter_client', 'jupyter_core', 'tkinter.test', 'unittest',
+        'django', 'flask', 'docker', 'dipy', 'h5py', 'nibabel', 'esphome',
+        'aioesphomeapi', 'zeroconf', 'cryptography', 'setuptools', 'distutils',
+        'pkg_resources', 'PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'shiboken2',
+        'shiboken6', 'pyqtgraph', 'PySimpleGUI'
+    ],
     noarchive=False,
     optimize=0,
 )
@@ -25,7 +107,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
@@ -36,3 +118,4 @@ exe = EXE(
     entitlements_file=None,
     icon=['diskpulse.ico'],
 )
+
