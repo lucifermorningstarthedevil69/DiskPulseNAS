@@ -1,6 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 a = Analysis(
     ['gui_launcher.py'],
     pathex=[],
@@ -35,5 +34,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\adity\\Downloads\\files\\DiskPulse\\DiskPulseNAS\\diskpulse.ico'],
+    icon=['diskpulse.ico'],
 )
