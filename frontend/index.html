@@ -1,27 +1,36 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DiskPulse NAS - Storage Monitor, File Manager & Media Hub</title>
-  
+
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet">
+
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
-  
-  <!-- Chart.js for Telemetry Charts -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  
+
+  <!-- Chart.js for Telemetry Charts. Pinned to v4: the dashboard now builds six
+       charts against the v4 API (object-keyed scales, {x,y} point data, per-dataset
+       `type` inside a bar chart), all of which a future major would break. -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+
   <!-- QRCode.js for Mobile Device Uploader -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/x-icon" href="https://i.ibb.co/Y4bcfYkY/save-data.png">
 
   <!-- Stylesheet -->
   <link rel="stylesheet" href="css/styles.css">
 </head>
+
 <body>
   <div class="app-container">
     <!-- ================= Sidebar ================= -->
@@ -77,6 +86,12 @@
           <div class="progress-mini">
             <div class="progress-mini-bar" id="sidebar-pool-bar" style="width: 0%;"></div>
           </div>
+          <div class="quick-bar-row" style="font-size: 0.7rem; white-space: nowrap;">
+            <span><span style="color: var(--text-muted);">Used</span>
+              <span id="sidebar-pool-used" style="color: var(--accent-cyan); font-weight: 600;">--</span></span>
+            <span><span style="color: var(--text-muted);">Total</span>
+              <span id="sidebar-pool-total" style="color: var(--text-main); font-weight: 600;">--</span></span>
+          </div>
           <div class="quick-bar-row" style="margin-top: 4px; font-size: 0.7rem;">
             <span id="sidebar-hostname">NAS Server</span>
             <span id="sidebar-uptime">--</span>
@@ -84,6 +99,9 @@
         </div>
       </div>
     </aside>
+
+    <!-- Tap-to-close backdrop for the mobile nav drawer -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
     <!-- ================= Main Wrapper ================= -->
     <main class="main-wrapper">
@@ -117,7 +135,7 @@
 
       <!-- Views Container -->
       <div class="views-container">
-        
+
         <!-- 1. DASHBOARD VIEW -->
         <section class="view-panel active" id="view-dashboard">
           <!-- Top Telemetry Cards -->
@@ -126,7 +144,8 @@
             <div class="card">
               <div class="card-header">
                 <span class="card-title"><i data-lucide="database"></i> Storage Pool</span>
-                <span class="nav-badge" id="dash-pool-percent" style="background: rgba(0,242,254,0.15); color: var(--accent-cyan);">0%</span>
+                <span class="nav-badge" id="dash-pool-percent"
+                  style="background: rgba(0,242,254,0.15); color: var(--accent-cyan);">0%</span>
               </div>
               <div class="stat-value" id="dash-pool-used">--</div>
               <div class="stat-sub">
@@ -143,13 +162,18 @@
             <div class="card">
               <div class="card-header">
                 <span class="card-title"><i data-lucide="zap"></i> Disk Throughput</span>
-                <span class="nav-badge" id="dash-disk-iops" style="background: rgba(16,185,129,0.15); color: var(--accent-emerald);">0 IOPS</span>
+                <span class="nav-badge" id="dash-disk-iops"
+                  style="background: rgba(16,185,129,0.15); color: var(--accent-emerald);">0 IOPS</span>
               </div>
               <div class="stat-value" id="dash-disk-rw">0 B/s</div>
               <div class="stat-sub">
-                <span style="color: var(--accent-cyan);"><i data-lucide="arrow-down" style="width: 12px; height: 12px; display:inline;"></i> Read: <span id="dash-disk-read">0 B/s</span></span>
+                <span style="color: var(--accent-cyan);"><i data-lucide="arrow-down"
+                    style="width: 12px; height: 12px; display:inline;"></i> Read: <span id="dash-disk-read">0
+                    B/s</span></span>
                 <span>•</span>
-                <span style="color: var(--accent-emerald);"><i data-lucide="arrow-up" style="width: 12px; height: 12px; display:inline;"></i> Write: <span id="dash-disk-write">0 B/s</span></span>
+                <span style="color: var(--accent-emerald);"><i data-lucide="arrow-up"
+                    style="width: 12px; height: 12px; display:inline;"></i> Write: <span id="dash-disk-write">0
+                    B/s</span></span>
               </div>
             </div>
 
@@ -179,7 +203,8 @@
                 <span>Total: <strong id="dash-ram-total" style="color: #fff;">--</strong></span>
               </div>
               <div class="progress-mini" style="margin-top: 14px; height: 6px;">
-                <div class="progress-mini-bar" id="dash-ram-bar" style="width: 0%; background: var(--grad-violet);"></div>
+                <div class="progress-mini-bar" id="dash-ram-bar" style="width: 0%; background: var(--grad-violet);">
+                </div>
               </div>
             </div>
           </div>
@@ -206,14 +231,169 @@
             </div>
           </div>
 
+          <!-- NAS Network & Internet Speed Test Card -->
+          <div class="card"
+            style="margin-bottom: 24px; background: linear-gradient(135deg, rgba(15,23,42,0.85) 0%, rgba(22,32,54,0.7) 100%);">
+            <div class="card-header">
+              <span class="card-title"><i data-lucide="gauge"></i> NAS Network & Internet Speed Performance</span>
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <span class="nav-badge" id="speedtest-status-badge"
+                  style="background: rgba(56,189,248,0.15); color: var(--accent-blue);">READY</span>
+                <button class="btn btn-primary btn-sm" id="btn-run-speedtest">
+                  <i data-lucide="play"></i> <span id="btn-run-speedtest-text">Run Speed Test</span>
+                </button>
+              </div>
+            </div>
+
+            <div
+              style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-top: 12px;">
+              <!-- Download Speed -->
+              <div
+                style="background: rgba(0,242,254,0.06); border: 1px solid rgba(0,242,254,0.2); border-radius: var(--radius-md); padding: 14px; display: flex; align-items: center; gap: 14px;">
+                <div
+                  style="width: 44px; height: 44px; border-radius: 50%; background: rgba(0,242,254,0.15); display: flex; align-items: center; justify-content: center; color: var(--accent-cyan);">
+                  <i data-lucide="download" style="width: 22px; height: 22px;"></i>
+                </div>
+                <div>
+                  <div
+                    style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600;">
+                    Download Speed</div>
+                  <div style="font-size: 1.5rem; font-weight: 700; color: var(--accent-cyan);" id="st-download-val">--
+                    <span style="font-size: 0.85rem; font-weight: 500;">Mbps</span></div>
+                </div>
+              </div>
+
+              <!-- Upload Speed -->
+              <div
+                style="background: rgba(16,185,129,0.06); border: 1px solid rgba(16,185,129,0.2); border-radius: var(--radius-md); padding: 14px; display: flex; align-items: center; gap: 14px;">
+                <div
+                  style="width: 44px; height: 44px; border-radius: 50%; background: rgba(16,185,129,0.15); display: flex; align-items: center; justify-content: center; color: var(--accent-emerald);">
+                  <i data-lucide="upload" style="width: 22px; height: 22px;"></i>
+                </div>
+                <div>
+                  <div
+                    style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600;">
+                    Upload Speed</div>
+                  <div style="font-size: 1.5rem; font-weight: 700; color: var(--accent-emerald);" id="st-upload-val">--
+                    <span style="font-size: 0.85rem; font-weight: 500;">Mbps</span></div>
+                </div>
+              </div>
+
+              <!-- Latency / Ping -->
+              <div
+                style="background: rgba(139,92,246,0.06); border: 1px solid rgba(139,92,246,0.2); border-radius: var(--radius-md); padding: 14px; display: flex; align-items: center; gap: 14px;">
+                <div
+                  style="width: 44px; height: 44px; border-radius: 50%; background: rgba(139,92,246,0.15); display: flex; align-items: center; justify-content: center; color: var(--accent-violet);">
+                  <i data-lucide="activity" style="width: 22px; height: 22px;"></i>
+                </div>
+                <div>
+                  <div
+                    style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600;">
+                    Latency / Ping</div>
+                  <div style="font-size: 1.5rem; font-weight: 700; color: var(--accent-violet);" id="st-ping-val">--
+                    <span style="font-size: 0.85rem; font-weight: 500;">ms</span></div>
+                </div>
+              </div>
+
+              <!-- ISP & Server Info -->
+              <div
+                style="background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.2); border-radius: var(--radius-md); padding: 14px; display: flex; align-items: center; gap: 14px;">
+                <div
+                  style="width: 44px; height: 44px; border-radius: 50%; background: rgba(245,158,11,0.15); display: flex; align-items: center; justify-content: center; color: var(--accent-amber);">
+                  <i data-lucide="globe" style="width: 22px; height: 22px;"></i>
+                </div>
+                <div style="overflow: hidden;">
+                  <div
+                    style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600;">
+                    ISP & Location</div>
+                  <div
+                    style="font-size: 0.9rem; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                    id="st-isp-val">--</div>
+                  <div style="font-size: 0.75rem; color: var(--text-dim);" id="st-server-val">Server: --</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Live phase progress: only meaningful while a test is running, so the
+                 renderer hides this whole row when it is idle. -->
+            <div id="st-progress-row" style="margin-top: 14px; display: none;">
+              <div
+                style="display: flex; justify-content: space-between; align-items: baseline; font-size: 0.75rem; margin-bottom: 6px;">
+                <span style="color: var(--text-muted); font-weight: 600;" id="st-phase-label">Idle</span>
+                <span style="color: var(--text-dim);"><strong id="st-live-mbps"
+                    style="color: var(--accent-cyan);">--</strong> Mbps &nbsp;·&nbsp; <span
+                    id="st-elapsed">0.0s</span></span>
+              </div>
+              <div class="progress-mini" style="height: 6px;">
+                <div class="progress-mini-bar" id="st-progress-bar" style="width: 0%;"></div>
+              </div>
+            </div>
+
+            <!-- Throughput over time: the shape of the transfer is what a single
+                 average number can't tell you — ramp-up, stalls and sustained rate. -->
+            <div style="margin-top: 18px;">
+              <div
+                style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.8rem;">
+                <span style="color: var(--text-muted); font-weight: 600;"><i data-lucide="line-chart"
+                    style="width: 14px; height: 14px; display: inline; vertical-align: -2px;"></i> Throughput Over
+                  Time</span>
+                <span style="font-size: 0.7rem; color: var(--text-dim);" id="st-live-hint">Run a test to plot the
+                  transfer</span>
+              </div>
+              <div class="chart-container" style="height: 220px;">
+                <canvas id="chart-speedtest-live"></canvas>
+              </div>
+            </div>
+
+            <div class="charts-grid" style="margin-top: 18px; margin-bottom: 0;">
+              <!-- Latency detail -->
+              <div>
+                <div
+                  style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.8rem;">
+                  <span style="color: var(--text-muted); font-weight: 600;"><i data-lucide="activity"
+                      style="width: 14px; height: 14px; display: inline; vertical-align: -2px;"></i> Latency &
+                    Jitter</span>
+                  <span style="font-size: 0.7rem; color: var(--text-dim);" id="st-jitter-summary">--</span>
+                </div>
+                <div class="chart-container" style="height: 200px;">
+                  <canvas id="chart-speedtest-ping"></canvas>
+                </div>
+              </div>
+
+              <!-- Run history -->
+              <div>
+                <div
+                  style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 0.8rem;">
+                  <span style="color: var(--text-muted); font-weight: 600;"><i data-lucide="history"
+                      style="width: 14px; height: 14px; display: inline; vertical-align: -2px;"></i> Recent Runs</span>
+                  <span style="font-size: 0.7rem; color: var(--text-dim);" id="st-history-summary">No previous
+                    runs</span>
+                </div>
+                <div class="chart-container" style="height: 200px;">
+                  <canvas id="chart-speedtest-history"></canvas>
+                </div>
+              </div>
+            </div>
+
+            <div
+              style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; font-size: 0.75rem; color: var(--text-dim); border-top: 1px solid var(--border-glass); padding-top: 10px;">
+              <span><i data-lucide="clock" style="width: 12px; height: 12px; display: inline;"></i> Last Tested: <strong
+                  id="st-last-tested" style="color: var(--text-muted);">Never</strong></span>
+              <span id="st-ip-text">IP: <strong id="st-client-ip" style="color: var(--text-muted);">--</strong></span>
+            </div>
+          </div>
+
           <!-- S.M.A.R.T. Drive Health & Temperature Telemetry -->
-          <h2 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
-            <i data-lucide="shield-check" style="color: var(--accent-emerald);"></i> S.M.A.R.T. Drive Health & Temperature Telemetry
+          <h2
+            style="font-size: 1.1rem; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+            <i data-lucide="shield-check" style="color: var(--accent-emerald);"></i> S.M.A.R.T. Drive Health &
+            Temperature Telemetry
           </h2>
           <div class="drives-grid" id="dash-drives-grid"></div>
 
           <!-- System Partitions & Mounts -->
-          <h2 style="font-size: 1.1rem; font-weight: 600; margin: 24px 0 14px; display: flex; align-items: center; gap: 8px;">
+          <h2
+            style="font-size: 1.1rem; font-weight: 600; margin: 24px 0 14px; display: flex; align-items: center; gap: 8px;">
             <i data-lucide="hard-drive" style="color: var(--accent-blue);"></i> Active Mount Points & Partitions
           </h2>
           <div class="card" style="padding: 0; overflow-x: auto;">
@@ -256,20 +436,31 @@
                 <i data-lucide="upload"></i> Upload
               </button>
 
-              <div style="display: flex; gap: 4px; background: var(--bg-secondary); padding: 3px; border-radius: var(--radius-md); border: 1px solid var(--border-glass);">
-                <button class="btn btn-secondary btn-icon" id="fm-toggle-grid" style="width: 32px; height: 32px;" title="Grid View">
+              <div
+                style="display: flex; gap: 4px; background: var(--bg-secondary); padding: 3px; border-radius: var(--radius-md); border: 1px solid var(--border-glass);">
+                <button class="btn btn-secondary btn-icon" id="fm-toggle-grid" style="width: 32px; height: 32px;"
+                  title="Grid View">
                   <i data-lucide="grid"></i>
                 </button>
-                <button class="btn btn-secondary btn-icon" id="fm-toggle-list" style="width: 32px; height: 32px;" title="List View">
+                <button class="btn btn-secondary btn-icon" id="fm-toggle-list" style="width: 32px; height: 32px;"
+                  title="List View">
                   <i data-lucide="list"></i>
                 </button>
               </div>
+              <button class="btn btn-secondary" id="fm-select-all-btn" title="Select all items">
+                <i data-lucide="check-square"></i> Select All
+              </button>
+              <button class="btn btn-secondary" id="fm-select-none-btn" title="Clear selection">
+                <i data-lucide="square"></i> Select None
+              </button>
             </div>
           </div>
 
           <!-- Bulk Selection Actions Bar -->
-          <div id="fm-bulk-bar" style="display: none; align-items: center; justify-content: space-between; background: rgba(0,242,254,0.08); border: 1px solid var(--accent-cyan); border-radius: var(--radius-md); padding: 10px 16px; margin-bottom: 16px;">
-            <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent-cyan);" id="fm-bulk-count">0 items selected</span>
+          <div id="fm-bulk-bar"
+            style="display: none; align-items: center; justify-content: space-between; background: rgba(0,242,254,0.08); border: 1px solid var(--accent-cyan); border-radius: var(--radius-md); padding: 10px 16px; margin-bottom: 16px;">
+            <span style="font-size: 0.85rem; font-weight: 600; color: var(--accent-cyan);" id="fm-bulk-count">0 items
+              selected</span>
             <div style="display: flex; gap: 8px;">
               <button class="btn btn-secondary" id="fm-bulk-zip"><i data-lucide="archive"></i> Download ZIP</button>
               <button class="btn btn-secondary" id="fm-bulk-move"><i data-lucide="folder-input"></i> Move</button>
@@ -286,13 +477,13 @@
             <table class="fm-view-list">
               <thead>
                 <tr>
-                  <th style="width: 40px;"><input type="checkbox" id="fm-select-all-checkbox"></th>
-                  <th>Name</th>
-                  <th>Size</th>
-                  <th>Type</th>
-                  <th>Modified</th>
-                  <th>Permissions</th>
-                  <th style="text-align: right;">Actions</th>
+                  <th class="fm-col-select" style="width: 40px;"><input type="checkbox" id="fm-select-all-checkbox"></th>
+                  <th class="fm-col-name">Name</th>
+                  <th class="fm-col-size">Size</th>
+                  <th class="fm-col-type">Type</th>
+                  <th class="fm-col-modified">Modified</th>
+                  <th class="fm-col-perms">Permissions</th>
+                  <th class="fm-col-actions" style="text-align: right;">Actions</th>
                 </tr>
               </thead>
               <tbody id="fm-files-list-tbody"></tbody>
@@ -304,17 +495,22 @@
         <section class="view-panel" id="view-downloads">
           <div class="filemanager-toolbar">
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-              <button class="btn btn-primary" id="btn-open-add-download">
-                <i data-lucide="plus-circle"></i> Add URL / Magnet Link
+              <button class="btn btn-primary" id="btn-add-youtube">
+                <i data-lucide="clapperboard"></i> Add Video / Media
+              </button>
+              <button class="btn btn-secondary" id="btn-add-torrent">
+                <i data-lucide="magnet"></i> Add Torrent
+              </button>
+              <button class="btn btn-secondary" id="btn-add-link">
+                <i data-lucide="link"></i> Add Direct Link
               </button>
             </div>
-            
-            <div class="dl-category-filters" style="display: flex; gap: 6px;">
-              <button class="btn btn-secondary btn-sm active" data-cat="all">All</button>
-              <button class="btn btn-secondary btn-sm" data-cat="media">Media</button>
-              <button class="btn btn-secondary btn-sm" data-cat="iso">ISOs</button>
-              <button class="btn btn-secondary btn-sm" data-cat="documents">Docs</button>
-              <button class="btn btn-secondary btn-sm" data-cat="software">Software</button>
+
+            <div class="dl-type-filters" style="display: flex; gap: 6px;">
+              <button class="btn btn-secondary btn-sm active" data-kind="all">All</button>
+              <button class="btn btn-secondary btn-sm" data-kind="torrent">Torrents</button>
+              <button class="btn btn-secondary btn-sm" data-kind="youtube">Video / Media</button>
+              <button class="btn btn-secondary btn-sm" data-kind="http">Direct Links</button>
             </div>
           </div>
 
@@ -326,11 +522,13 @@
             </div>
             <div class="card" style="padding: 16px;">
               <span class="card-title" style="font-size: 0.8rem;"><i data-lucide="zap"></i> Aggregate Speed</span>
-              <div class="stat-value" id="dl-stat-speed" style="font-size: 1.6rem; color: var(--accent-cyan);">0 B/s</div>
+              <div class="stat-value" id="dl-stat-speed" style="font-size: 1.6rem; color: var(--accent-cyan);">0 B/s
+              </div>
             </div>
             <div class="card" style="padding: 16px;">
               <span class="card-title" style="font-size: 0.8rem;"><i data-lucide="check-circle"></i> Completed</span>
-              <div class="stat-value" id="dl-stat-completed" style="font-size: 1.6rem; color: var(--accent-emerald);">0</div>
+              <div class="stat-value" id="dl-stat-completed" style="font-size: 1.6rem; color: var(--accent-emerald);">0
+              </div>
             </div>
           </div>
 
@@ -338,7 +536,7 @@
           <div class="dl-tasks-container" id="dl-tasks-container">
             <div style="text-align: center; padding: 48px; color: var(--text-dim);">
               <i data-lucide="download-cloud" style="width: 48px; height: 48px; margin-bottom: 12px; opacity: 0.5;"></i>
-              <p>No active downloads. Click "Add URL / Magnet Link" to start a download.</p>
+              <p>No active downloads. Add a video/media link, torrent, or direct link above to get started.</p>
             </div>
           </div>
         </section>
@@ -365,7 +563,8 @@
             <div class="terminal-body" id="term-output"></div>
             <div class="terminal-prompt-line">
               <span class="terminal-prompt-label" id="term-prompt">nasadmin@diskpulse:~$</span>
-              <input type="text" class="terminal-input" id="term-input" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" autofocus>
+              <input type="text" class="terminal-input" id="term-input" autocomplete="off" autocorrect="off"
+                autocapitalize="off" spellcheck="false" autofocus>
             </div>
           </div>
         </section>
@@ -375,47 +574,124 @@
           <div class="media-hub-layout">
             <!-- Active Player Card -->
             <div class="media-player-card">
-              <!-- Video Screen -->
+              <!-- Video Screen — floating auto-hiding overlay controls -->
               <div class="video-wrapper" id="media-video-container" style="display: none;">
-                <video id="media-video-element" controls playsinline></video>
+                <video id="media-video-element" playsinline></video>
+
+                <!-- Gesture layer: single tap = play/pause, double tap left/right = seek ±10s -->
+                <div class="vp-gesture" id="vp-gesture"></div>
+
+                <!-- Transient center feedback (play / pause) -->
+                <div class="vp-flash" id="vp-flash"><i data-lucide="play"></i></div>
+
+                <!-- Double-tap seek ripples -->
+                <div class="vp-seek-ind vp-seek-ind-left" id="vp-ind-left">
+                  <i data-lucide="rotate-ccw"></i><span>10s</span>
+                </div>
+                <div class="vp-seek-ind vp-seek-ind-right" id="vp-ind-right">
+                  <i data-lucide="rotate-cw"></i><span>10s</span>
+                </div>
+
+                <!-- Top bar: back + title | bookmark · cast -->
+                <div class="vp-topbar" id="vp-topbar">
+                  <div class="vp-topbar-left">
+                    <button class="vp-btn" id="vp-btn-back" title="Back to library"><i data-lucide="arrow-left"></i></button>
+                    <span class="vp-title" id="vp-title"></span>
+                  </div>
+                  <div class="vp-topbar-right">
+                    <button class="vp-btn" id="vp-btn-bookmark" title="Bookmark this position"><i data-lucide="bookmark"></i></button>
+                    <button class="vp-btn" id="vp-btn-cast" title="Cast to device"><i data-lucide="cast"></i></button>
+                  </div>
+                </div>
+
+                <!-- Bottom overlay: scrubber + control rows -->
+                <div class="vp-bottom" id="vp-bottom">
+                  <!-- Row 1 — scrub bar with hover thumbnail preview -->
+                  <div class="vp-seek-row">
+                    <div class="vp-preview" id="vp-preview">
+                      <img id="vp-preview-img" alt="">
+                      <span id="vp-preview-time">0:00</span>
+                    </div>
+                    <div class="vp-seek" id="vp-seek" title="">
+                      <div class="vp-seek-track">
+                        <div class="vp-seek-fill" id="vp-seek-fill"></div>
+                      </div>
+                      <div class="vp-seek-thumb" id="vp-seek-thumb"></div>
+                    </div>
+                  </div>
+
+                  <!-- Row 2 — transport left · quick settings right -->
+                  <div class="vp-controls-row">
+                    <div class="vp-group">
+                      <button class="vp-btn" id="vp-btn-play" title="Play / pause (k)"><i data-lucide="play"></i></button>
+                      <button class="vp-btn" id="vp-btn-prev" title="Previous in playlist"><i data-lucide="skip-back"></i></button>
+                      <button class="vp-btn" id="vp-btn-next" title="Next in playlist"><i data-lucide="skip-forward"></i></button>
+                      <div class="vp-volume">
+                        <button class="vp-btn" id="vp-btn-mute" title="Mute (m)"><i data-lucide="volume-2"></i></button>
+                        <input type="range" class="vp-vol-slider" id="vp-volume" min="0" max="1" step="0.05" value="0.8">
+                      </div>
+                      <span class="vp-time"><span id="vp-cur">0:00</span><span class="vp-time-sep">/</span><span id="vp-dur">0:00</span></span>
+                    </div>
+                    <div class="vp-group">
+                      <button class="vp-btn" id="vp-btn-cc" title="Subtitles (c)"><i data-lucide="captions"></i></button>
+                      <button class="vp-btn vp-btn-speed" id="vp-btn-speed" title="Playback speed"><span id="vp-speed-label">1.0x</span></button>
+                      <button class="vp-btn" id="vp-btn-settings" title="Settings"><i data-lucide="settings"></i></button>
+                      <button class="vp-btn" id="vp-btn-fullscreen" title="Fullscreen (f)"><i data-lucide="maximize"></i></button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Consolidated settings menu (speed / audio / subtitles), rendered by JS -->
+                <div class="vp-menu" id="vp-menu"></div>
               </div>
 
               <!-- Audio Wave Visualizer Box -->
               <div class="audio-visualizer-box" id="media-audio-container">
                 <canvas class="visualizer-canvas" id="audio-visualizer-canvas"></canvas>
                 <div style="z-index: 10; text-align: center; padding: 20px;">
-                  <div style="width: 72px; height: 72px; margin: 0 auto 12px; border-radius: 50%; background: var(--grad-violet); display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow-glow-violet);">
+                  <div
+                    style="width: 72px; height: 72px; margin: 0 auto 12px; border-radius: 50%; background: var(--grad-violet); display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow-glow-violet);">
                     <i data-lucide="music" style="width: 36px; height: 36px; color: #fff;"></i>
                   </div>
-                  <h3 id="audio-current-title" style="font-size: 1.1rem; font-weight: 600;">Select a track to stream</h3>
-                  <p id="audio-current-artist" style="font-size: 0.8rem; color: var(--text-muted);">DiskPulse High-Fidelity Audio Engine</p>
+                  <h3 id="audio-current-title" style="font-size: 1.1rem; font-weight: 600;">Select a track to stream
+                  </h3>
+                  <p id="audio-current-artist" style="font-size: 0.8rem; color: var(--text-muted);">DiskPulse
+                    High-Fidelity Audio Engine</p>
                 </div>
                 <audio id="media-audio-element" style="display: none;"></audio>
               </div>
 
-              <!-- Media Player Controls -->
-              <div class="media-controls">
+              <!-- Audio Player Controls (video uses the floating overlay above) -->
+              <div class="media-controls" id="audio-controls">
                 <div class="media-scrub">
-                  <span id="media-current-time" style="font-size: 0.75rem; color: var(--text-dim); min-width: 40px;">0:00</span>
+                  <span id="media-current-time"
+                    style="font-size: 0.75rem; color: var(--text-dim); min-width: 40px;">0:00</span>
                   <input type="range" class="scrub-bar" id="media-seek-bar" min="0" max="100" value="0">
-                  <span id="media-duration" style="font-size: 0.75rem; color: var(--text-dim); min-width: 40px;">0:00</span>
+                  <span id="media-duration"
+                    style="font-size: 0.75rem; color: var(--text-dim); min-width: 40px;">0:00</span>
                 </div>
 
                 <div class="media-buttons-row">
                   <div style="display: flex; align-items: center; gap: 8px;">
-                    <button class="btn btn-secondary btn-icon" id="media-btn-prev"><i data-lucide="skip-back"></i></button>
-                    <button class="btn btn-primary btn-icon" id="media-btn-play" style="width: 42px; height: 42px;"><i data-lucide="play"></i></button>
-                    <button class="btn btn-secondary btn-icon" id="media-btn-next"><i data-lucide="skip-forward"></i></button>
+                    <button class="btn btn-secondary btn-icon" id="media-btn-prev"><i
+                        data-lucide="skip-back"></i></button>
+                    <button class="btn btn-primary btn-icon" id="media-btn-play" style="width: 42px; height: 42px;"><i
+                        data-lucide="play"></i></button>
+                    <button class="btn btn-secondary btn-icon" id="media-btn-next"><i
+                        data-lucide="skip-forward"></i></button>
                   </div>
 
                   <div style="display: flex; align-items: center; gap: 12px;">
                     <i data-lucide="volume-2" style="width: 16px; height: 16px; color: var(--text-muted);"></i>
-                    <input type="range" class="scrub-bar" id="media-volume-bar" min="0" max="1" step="0.05" value="0.8" style="width: 80px;">
+                    <input type="range" class="scrub-bar" id="media-volume-bar" min="0" max="1" step="0.05" value="0.8"
+                      style="width: 80px;">
                     <select class="form-select" id="media-speed-select" style="padding: 4px 8px; font-size: 0.75rem;">
+                      <option value="0.5">0.5x</option>
                       <option value="0.75">0.75x</option>
                       <option value="1" selected>1.0x</option>
                       <option value="1.25">1.25x</option>
                       <option value="1.5">1.5x</option>
+                      <option value="1.75">1.75x</option>
                       <option value="2">2.0x</option>
                     </select>
                   </div>
@@ -427,9 +703,11 @@
             <div class="card" style="display: flex; flex-direction: column; height: calc(100vh - 160px);">
               <div class="card-header">
                 <span class="card-title"><i data-lucide="list-music"></i> Media Storage Library</span>
-                <button class="btn btn-secondary btn-sm" id="media-refresh-btn"><i data-lucide="refresh-cw"></i></button>
+                <button class="btn btn-secondary btn-sm" id="media-refresh-btn"><i
+                    data-lucide="refresh-cw"></i></button>
               </div>
-              <div style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;" id="media-playlist-container"></div>
+              <div style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;"
+                id="media-playlist-container"></div>
             </div>
           </div>
         </section>
@@ -440,7 +718,8 @@
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
               <div>
                 <h2 style="font-size: 1.15rem; font-weight: 600;">Multi-Device Drag & Drop Storage Uploader</h2>
-                <p style="font-size: 0.85rem; color: var(--text-muted);">Upload files directly from this desktop or scan the QR code to upload instantly from your smartphone.</p>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">Upload files directly from this desktop or scan
+                  the QR code to upload instantly from your smartphone.</p>
               </div>
               <button class="btn btn-secondary" id="btn-open-qr-modal">
                 <i data-lucide="qr-code"></i> Connect Phone / Mobile
@@ -449,14 +728,46 @@
 
             <div class="form-group">
               <label class="form-label">Target Storage Folder</label>
-              <input type="text" class="form-input" id="upload-target-path" placeholder="Leave empty for root or e.g. Movies, Music, Documents">
+              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+                <input type="text" class="form-input" id="upload-target-path"
+                  placeholder="Storage root — click Browse to choose a folder"
+                  style="flex: 1 1 200px; min-width: 0;">
+                <button type="button" class="btn btn-secondary" id="upload-browse-btn" style="flex-shrink: 0;">
+                  <i data-lucide="folder-search"></i> Browse
+                </button>
+                <button type="button" class="btn btn-secondary" id="upload-backup-btn" style="flex-shrink: 0;">
+                  <i data-lucide="shield"></i> Backup
+                </button>
+              </div>
+              <label style="display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; font-size: 0.83rem; color: var(--text-muted); cursor: pointer;">
+                <input type="checkbox" id="upload-sort-type" checked
+                  style="width: 16px; height: 16px; margin-top: 1px; accent-color: var(--accent-cyan); cursor: pointer; flex-shrink: 0;">
+                <span>Sort <strong>individual files</strong> into type folders (Images, Video, Audio, Documents, Archives, Disk&nbsp;Images, Programs, Other).</span>
+              </label>
+              <p style="font-size: 0.78rem; color: var(--text-dim); margin: 8px 0 0;">
+                <i data-lucide="folder" style="width: 13px; height: 13px; vertical-align: -2px;"></i>
+                Whole folders are always uploaded intact — the structure is preserved and never split into type folders. They land in <strong>Backup</strong> unless you choose another destination above.
+              </p>
             </div>
 
+            <!-- Hidden pickers live OUTSIDE the dropzone: a programmatic .click()
+                 bubbles, and the dropzone's own click handler would re-open the
+                 plain file dialog on top of the folder dialog. -->
+            <input type="file" id="uploader-file-input" multiple style="display: none;">
+            <input type="file" id="uploader-folder-input" webkitdirectory directory multiple style="display: none;">
+
             <div class="uploader-dropzone" id="uploader-dropzone">
-              <input type="file" id="uploader-file-input" multiple style="display: none;">
               <i data-lucide="cloud-upload" class="dropzone-icon"></i>
-              <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 6px;">Drag & Drop files here</h3>
-              <p style="font-size: 0.85rem; color: var(--text-muted);">or <span style="color: var(--accent-cyan); font-weight: 600; text-decoration: underline;">browse from your computer</span></p>
+              <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 6px;">Drag & Drop files or folders here</h3>
+              <p style="font-size: 0.85rem; color: var(--text-muted);">or use the buttons below</p>
+              <div style="margin-top: 14px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+                <button type="button" class="btn btn-secondary btn-sm" id="uploader-pick-files"><i data-lucide="file-plus"></i> Add files</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="uploader-pick-folder"><i data-lucide="folder-plus"></i> Add folder</button>
+              </div>
+              <p style="font-size: 0.75rem; color: var(--text-dim); margin: 12px 0 0;">
+                <i data-lucide="info" style="width: 12px; height: 12px; vertical-align: -2px;"></i>
+                Tip: <strong>dragging</strong> a folder in skips your browser's “Upload N files to this site?” prompt — <strong>Add folder</strong> always shows it.
+              </p>
             </div>
           </div>
 
@@ -477,13 +788,16 @@
         <section class="view-panel" id="view-deploy">
           <div class="card" style="margin-bottom: 24px;">
             <div class="card-header">
-              <span class="card-title"><i data-lucide="server"></i> 1-Click NAS Standalone Package & Service Generator</span>
+              <span class="card-title"><i data-lucide="server"></i> 1-Click NAS Standalone Package & Service
+                Generator</span>
             </div>
             <p style="font-size: 0.9rem; color: var(--text-muted); margin-bottom: 20px;">
-              Deploy DiskPulse natively on your Synology DSM 7, TrueNAS SCALE, Ubuntu/Debian Server, or Docker stack with pre-configured persistent mounts.
+              Deploy DiskPulse natively on your Synology DSM 7, TrueNAS SCALE, Ubuntu/Debian Server, or Docker stack
+              with pre-configured persistent mounts.
             </p>
 
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 20px;">
+            <div
+              style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 20px;">
               <div class="form-group">
                 <label class="form-label">Target NAS Operating System</label>
                 <select class="form-select" id="deploy-platform-select">
@@ -514,13 +828,15 @@
                 <i data-lucide="copy"></i> Copy to Clipboard
               </button>
               <div style="flex:1;"></div>
-              <button class="btn btn-danger" id="deploy-btn-reset" onclick="deployResetSetup()" title="Re-run the first-time setup wizard to change your storage drive">
+              <button class="btn btn-danger" id="deploy-btn-reset" onclick="deployResetSetup()"
+                title="Re-run the first-time setup wizard to change your storage drive">
                 <i data-lucide="settings-2"></i> Reset & Reconfigure Storage
               </button>
             </div>
 
             <div style="position: relative;">
-              <textarea class="form-textarea" id="deploy-config-preview" readonly style="font-family: var(--font-mono); font-size: 0.85rem; height: 320px;"></textarea>
+              <textarea class="form-textarea" id="deploy-config-preview" readonly
+                style="font-family: var(--font-mono); font-size: 0.85rem; height: 320px;"></textarea>
             </div>
           </div>
         </section>
@@ -530,7 +846,7 @@
   </div>
 
   <!-- ================= MODALS ================= -->
-  
+
   <!-- Add Download Modal -->
   <div class="modal-backdrop" id="modal-add-download">
     <div class="modal-card">
@@ -538,13 +854,170 @@
         <h3 class="modal-title"><i data-lucide="download-cloud"></i> Add New Download</h3>
         <button class="btn btn-secondary btn-icon modal-close"><i data-lucide="x"></i></button>
       </div>
+
+      <!-- Download type tabs — each type gets its own form -->
+      <div class="dl-modal-tabs">
+        <button type="button" class="dl-modal-tab active" data-dltab="youtube">
+          <i data-lucide="clapperboard"></i> Video / Media
+        </button>
+        <button type="button" class="dl-modal-tab" data-dltab="torrent">
+          <i data-lucide="magnet"></i> Torrent
+        </button>
+        <button type="button" class="dl-modal-tab" data-dltab="link">
+          <i data-lucide="link"></i> Direct Link
+        </button>
+      </div>
+
       <div class="modal-body">
+        <!-- ===== Video / Media pane (yt-dlp: 1,800+ sites) ===== -->
+        <div class="dl-modal-pane" id="dl-pane-youtube">
+          <div class="form-group">
+            <label class="form-label">Video URL</label>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <input type="text" class="form-input" id="modal-dl-url" style="flex: 1 1 180px; min-width: 0;"
+                placeholder="Paste a link — YouTube, Instagram, X, Vimeo, TikTok, Reddit… (1,800+ sites)">
+              <button class="btn btn-secondary" id="modal-dl-fetch" title="Fetch available video/audio qualities">
+                <i data-lucide="search"></i> Fetch formats
+              </button>
+            </div>
+            <div id="modal-dl-probe-msg"
+              style="font-size: 0.75rem; color: var(--text-dim); margin-top: 6px; display: none;"></div>
+            <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 6px; line-height: 1.5;">
+              <i data-lucide="info" style="width: 12px; height: 12px; vertical-align: -1px;"></i>
+              Works with YouTube, Instagram, X, Facebook, Vimeo, Dailymotion, TikTok, Reddit, Twitch, SoundCloud
+              &amp; 1,800+ more via <code>yt-dlp</code>. Login-only or DRM-protected videos may need you signed in
+              on this machine (DiskPulse reuses your browser cookies).
+            </div>
+          </div>
+
+        <!-- Media preview + quality picker (revealed for media links / after probe) -->
+        <div id="modal-dl-media-options" style="display: none;">
+          <div id="modal-dl-preview"
+            style="display: none; gap: 12px; align-items: center; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 10px; margin-bottom: 14px;">
+            <img id="modal-dl-thumb" src="" alt=""
+              style="width: 120px; height: 68px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: #0f172a;">
+            <div style="min-width: 0;">
+              <div id="modal-dl-title"
+                style="font-weight: 600; color: #fff; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">
+              </div>
+              <div id="modal-dl-meta" style="font-size: 0.75rem; color: var(--text-dim); margin-top: 3px;"></div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Download as</label>
+            <div style="display: flex; gap: 8px;">
+              <button type="button" class="btn btn-secondary btn-sm dl-mode-btn active" data-mode="video"
+                style="flex: 1;"><i data-lucide="video"></i> Video</button>
+              <button type="button" class="btn btn-secondary btn-sm dl-mode-btn" data-mode="audio" style="flex: 1;"><i
+                  data-lucide="music"></i> Audio only</button>
+            </div>
+          </div>
+
+          <div class="form-group" id="modal-dl-video-row">
+            <label class="form-label">Video quality</label>
+            <select class="form-select" id="modal-dl-quality">
+              <option value="best">Best available</option>
+              <option value="2160">2160p (4K)</option>
+              <option value="1440">1440p (2K)</option>
+              <option value="1080">1080p (Full HD)</option>
+              <option value="720">720p (HD)</option>
+              <option value="480">480p</option>
+              <option value="360">360p</option>
+            </select>
+          </div>
+
+          <div class="form-group" id="modal-dl-audio-row" style="display: none;">
+            <div style="display: flex; gap: 10px;">
+              <div style="flex: 1;">
+                <label class="form-label">Audio format</label>
+                <select class="form-select" id="modal-dl-audio-format">
+                  <option value="mp3">MP3</option>
+                  <option value="m4a">M4A (AAC)</option>
+                  <option value="opus">Opus</option>
+                  <option value="flac">FLAC (lossless)</option>
+                  <option value="wav">WAV (lossless)</option>
+                </select>
+              </div>
+              <div style="flex: 1;" id="modal-dl-bitrate-wrap">
+                <label class="form-label">Bitrate</label>
+                <select class="form-select" id="modal-dl-audio-bitrate">
+                  <option value="320">320 kbps</option>
+                  <option value="256">256 kbps</option>
+                  <option value="192" selected>192 kbps</option>
+                  <option value="128">128 kbps</option>
+                  <option value="96">96 kbps</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div id="modal-dl-ffmpeg-warn"
+            style="display: none; font-size: 0.75rem; color: var(--accent-amber); background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.25); border-radius: 8px; padding: 8px 10px; margin-bottom: 4px;">
+          </div>
+        </div>
+
+          <!-- yt-dlp health / update strip -->
+          <div id="modal-dl-ytdlp-strip"
+            style="display: none; align-items: center; justify-content: space-between; gap: 10px; font-size: 0.72rem; color: var(--text-dim); border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px; margin-top: 4px;">
+            <span id="modal-dl-ytdlp-status">Checking yt-dlp…</span>
+            <button class="btn btn-secondary btn-sm" id="modal-dl-ytdlp-update" style="display: none;"><i
+                data-lucide="refresh-cw"></i> Update yt-dlp</button>
+          </div>
+        </div>
+
+        <!-- ===== Torrent pane ===== -->
+        <div class="dl-modal-pane" id="dl-pane-torrent" style="display: none;">
+          <div class="form-group">
+            <label class="form-label">Magnet Link or .torrent URL</label>
+            <input type="text" class="form-input" id="modal-dl-torrent-url"
+              placeholder="magnet:?xt=urn:btih:… or https://example.com/file.torrent">
+            <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 8px; line-height: 1.5;">
+              <i data-lucide="info" style="width: 12px; height: 12px; display: inline; vertical-align: -1px;"></i>
+              Multi-file torrents list every member file inside the download card with its own progress bar.
+              Uses the built-in BitTorrent engine (aria2c daemon as fallback when configured).
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== Direct Link pane ===== -->
+        <div class="dl-modal-pane" id="dl-pane-link" style="display: none;">
+          <div class="form-group">
+            <label class="form-label">Direct File URL</label>
+            <input type="text" class="form-input" id="modal-dl-link-url"
+              placeholder="https://example.com/file.iso">
+            <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 8px; line-height: 1.5;">
+              <i data-lucide="info" style="width: 12px; height: 12px; display: inline; vertical-align: -1px;"></i>
+              Any HTTP/HTTPS file link — resumable, chunked download. The filename is read from the server
+              response when available.
+            </div>
+          </div>
+        </div>
+
+        <!-- Shared destination options -->
         <div class="form-group">
-          <label class="form-label">Download URL or Magnet URI</label>
-          <input type="text" class="form-input" id="modal-dl-url" placeholder="https://example.com/file.iso or magnet:?xt=urn:btih:...">
+          <label class="form-label">Save Folder (Optional)</label>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+            <input type="text" class="form-input" id="modal-dl-custom-dir"
+              placeholder="Downloads — click Browse to choose a folder"
+              style="flex: 1 1 180px; min-width: 0;">
+            <button type="button" class="btn btn-secondary" id="modal-dl-browse-btn" style="flex-shrink: 0;">
+              <i data-lucide="folder-search"></i> Browse
+            </button>
+            <button type="button" class="btn btn-secondary" id="modal-dl-backup-btn" style="flex-shrink: 0;">
+              <i data-lucide="shield"></i> Backup
+            </button>
+          </div>
         </div>
         <div class="form-group">
-          <label class="form-label">Category (Auto-sorts into target NAS folder)</label>
+          <label style="display: flex; align-items: flex-start; gap: 8px; font-size: 0.83rem; color: var(--text-muted); cursor: pointer; margin: 0;">
+            <input type="checkbox" id="modal-dl-sort-type" checked
+              style="width: 16px; height: 16px; margin-top: 1px; accent-color: var(--accent-cyan); cursor: pointer; flex-shrink: 0;">
+            <span>Sort into type folders (Images, Video, Audio, Documents, Archives, Disk&nbsp;Images, Programs, Other). Uncheck to use the category below instead.</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category (used when type-sorting is off)</label>
           <select class="form-select" id="modal-dl-category">
             <option value="downloads">Auto-detect from extension</option>
             <option value="media">Media (Movies / Shows / Music)</option>
@@ -553,10 +1026,6 @@
             <option value="software">Software & Apps</option>
             <option value="backups">Backups</option>
           </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Custom Save Subdirectory (Optional)</label>
-          <input type="text" class="form-input" id="modal-dl-custom-dir" placeholder="e.g. Movies/SciFi">
         </div>
       </div>
       <div class="modal-footer">
@@ -586,6 +1055,160 @@
     </div>
   </div>
 
+  <!-- Rename Modal -->
+  <div class="modal-backdrop" id="modal-rename">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title"><i data-lucide="edit-2"></i> Rename item</h3>
+        <button class="btn btn-secondary btn-icon modal-close"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">New name</label>
+          <input type="text" class="form-input" id="modal-rename-input" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary modal-close">Cancel</button>
+        <button class="btn btn-primary" id="modal-rename-submit"><i data-lucide="check"></i> Rename</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Move / Copy Destination Picker Modal -->
+  <div class="modal-backdrop" id="modal-dest-picker">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title" id="dest-picker-title"><i data-lucide="folder-input"></i> Move items</h3>
+        <button class="btn btn-secondary btn-icon modal-close"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <p id="dest-picker-desc" style="font-size: 0.8rem; color: var(--text-dim); margin: 0 0 10px;"></p>
+        <div id="dest-picker-breadcrumbs"
+          style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 0.8rem; padding: 8px 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-glass); border-radius: var(--radius-md); margin-bottom: 8px;"></div>
+        <div id="dest-picker-list"
+          style="max-height: 320px; overflow-y: auto; border: 1px solid var(--border-glass); border-radius: var(--radius-md);"></div>
+      </div>
+      <div class="modal-footer">
+        <span id="dest-picker-warn" style="font-size: 0.75rem; color: var(--accent-amber); margin-right: auto;"></span>
+        <button class="btn btn-secondary modal-close">Cancel</button>
+        <button class="btn btn-primary" id="dest-picker-confirm"><i data-lucide="check"></i> <span id="dest-picker-confirm-label">Move here</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reusable Folder Picker Modal (uploader + download destination) -->
+  <div class="modal-backdrop" id="modal-folder-picker">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 class="modal-title" id="fp-title"><i data-lucide="folder-search"></i> Choose folder</h3>
+        <button class="btn btn-secondary btn-icon modal-close"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div id="fp-breadcrumbs"
+          style="display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 0.8rem; padding: 8px 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-glass); border-radius: var(--radius-md); margin-bottom: 8px;"></div>
+        <div id="fp-list"
+          style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border-glass); border-radius: var(--radius-md);"></div>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;">
+          <input type="text" class="form-input" id="fp-newfolder-input" placeholder="New subfolder name…"
+            autocomplete="off" spellcheck="false" style="flex: 1 1 160px; min-width: 0;">
+          <button class="btn btn-secondary" id="fp-newfolder-btn" style="flex-shrink: 0;"><i data-lucide="folder-plus"></i> Create</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span style="font-size: 0.75rem; color: var(--text-dim); margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Selected: <span id="fp-current" style="color: var(--accent-cyan); font-family: var(--font-mono);">/ (storage root)</span></span>
+        <button class="btn btn-secondary modal-close">Cancel</button>
+        <button class="btn btn-primary" id="fp-confirm"><i data-lucide="check"></i> <span id="fp-confirm-label">Select this folder</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Folder Upload Review Modal (in-app confirmation before a whole folder is queued) -->
+  <div class="modal-backdrop" id="modal-folder-confirm">
+    <div class="modal-card" style="max-width: 520px;">
+      <div class="modal-header">
+        <h3 class="modal-title"><i data-lucide="cloud-upload"></i> Confirm folder upload</h3>
+        <button class="btn btn-secondary btn-icon modal-close ufc-dismiss"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div
+          style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-glass); border-radius: var(--radius-md);">
+          <i data-lucide="folder" style="color: var(--accent-cyan); flex-shrink: 0;"></i>
+          <div style="overflow: hidden;">
+            <strong id="ufc-folder-name"
+              style="display: block; font-size: 0.92rem; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></strong>
+            <div id="ufc-stats" style="font-size: 0.78rem; color: var(--text-dim); margin-top: 2px;"></div>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: baseline; gap: 8px; font-size: 0.82rem; margin-top: 12px;">
+          <span style="color: var(--text-muted); flex-shrink: 0;">Destination</span>
+          <span id="ufc-dest"
+            style="color: var(--accent-cyan); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+        </div>
+
+        <p style="font-size: 0.78rem; color: var(--text-dim); margin: 8px 0 0;">
+          <i data-lucide="shield-check" style="width: 13px; height: 13px; vertical-align: -2px;"></i>
+          Structure preserved — never split into type folders.
+        </p>
+
+        <details style="margin-top: 12px;">
+          <summary id="ufc-toggle" style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted); user-select: none;">Show files</summary>
+          <div id="ufc-file-list"
+            style="max-height: 220px; overflow-y: auto; margin-top: 8px; border: 1px solid var(--border-glass); border-radius: var(--radius-md);"></div>
+        </details>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary modal-close ufc-dismiss">Cancel</button>
+        <button class="btn btn-primary" id="ufc-upload"><i data-lucide="upload"></i> <span
+            id="ufc-upload-label">Upload</span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Transfer Progress Modal (live move / copy progress) -->
+  <div class="modal-backdrop" id="modal-transfer-progress">
+    <div class="modal-card" style="max-width: 460px;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="transfer-title"><i data-lucide="folder-input"></i> Moving…</h3>
+        <button class="btn btn-secondary btn-icon modal-close"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="dl-progress-bar" style="margin-bottom: 10px;">
+          <div class="dl-progress-fill" id="transfer-bar" style="width: 0%;"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: baseline; font-size: 0.8rem; margin-bottom: 8px;">
+          <span id="transfer-percent" style="color: var(--text-main); font-weight: 600;">0%</span>
+          <span id="transfer-speed" style="color: var(--text-dim); font-size: 0.75rem;"></span>
+        </div>
+        <div id="transfer-current"
+          style="font-size: 0.78rem; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 6px;"></div>
+        <div id="transfer-detail" style="font-size: 0.75rem; color: var(--text-dim);"></div>
+      </div>
+      <div class="modal-footer">
+        <span style="font-size: 0.72rem; color: var(--text-dim); margin-right: auto;">Runs in the background — safe to close.</span>
+        <button class="btn btn-secondary modal-close">Hide</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic Confirm Modal (deletes, destructive actions) -->
+  <div class="modal-backdrop" id="modal-confirm">
+    <div class="modal-card" style="max-width: 440px;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="confirm-title"><i data-lucide="alert-triangle"></i> Confirm</h3>
+        <button class="btn btn-secondary btn-icon modal-close"><i data-lucide="x"></i></button>
+      </div>
+      <div class="modal-body">
+        <p id="confirm-message" style="font-size: 0.9rem; color: var(--text-main); margin: 0; line-height: 1.5;"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="confirm-cancel-btn">Cancel</button>
+        <button class="btn btn-danger" id="confirm-ok-btn"><i data-lucide="check"></i> <span id="confirm-ok-label">Confirm</span></button>
+      </div>
+    </div>
+  </div>
+
   <!-- New File / Code Editor Modal -->
   <div class="modal-backdrop" id="modal-file-editor">
     <div class="modal-card modal-large">
@@ -600,7 +1223,8 @@
         </div>
         <div class="form-group">
           <label class="form-label">Content</label>
-          <textarea class="form-textarea" id="editor-content" style="height: 350px; font-family: var(--font-mono); font-size: 0.85rem;"></textarea>
+          <textarea class="form-textarea" id="editor-content"
+            style="height: 350px; font-family: var(--font-mono); font-size: 0.85rem;"></textarea>
         </div>
       </div>
       <div class="modal-footer">
@@ -611,14 +1235,62 @@
   </div>
 
   <!-- Image Lightbox Modal -->
+  <!-- PDF Viewer Modal (PDF.js → canvas; PDFs must never reach the text editor) -->
+  <div class="modal-backdrop" id="modal-pdf-viewer">
+    <div class="modal-card modal-large"
+      style="max-width: 92vw; width: 920px; max-height: 92vh; background: rgba(10,15,25,0.97);">
+      <div class="modal-header">
+        <h3 class="modal-title" id="pdfv-title"><i data-lucide="file-text"></i> Document</h3>
+        <button class="btn btn-secondary btn-icon modal-close pdfv-dismiss"><i data-lucide="x"></i></button>
+      </div>
+
+      <div
+        style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--border-glass);">
+        <button class="btn btn-secondary btn-icon btn-sm" id="pdfv-prev" title="Previous page (←)"><i
+            data-lucide="arrow-left"></i></button>
+        <span style="font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; gap: 6px;">
+          <input type="text" id="pdfv-page-input" value="1" inputmode="numeric" autocomplete="off" spellcheck="false"
+            style="width: 46px; text-align: center; padding: 4px 6px; background: var(--bg-tertiary); border: 1px solid var(--border-glass); border-radius: var(--radius-sm); color: #fff; font-size: 0.8rem;">
+          / <span id="pdfv-page-count">–</span>
+        </span>
+        <button class="btn btn-secondary btn-icon btn-sm" id="pdfv-next" title="Next page (→)"><i
+            data-lucide="arrow-right"></i></button>
+
+        <span style="width: 1px; height: 20px; background: var(--border-glass); margin: 0 4px;"></span>
+
+        <button class="btn btn-secondary btn-sm" id="pdfv-zoom-out" title="Zoom out">−</button>
+        <span id="pdfv-zoom-label"
+          style="font-size: 0.78rem; color: var(--text-muted); min-width: 46px; text-align: center;">100%</span>
+        <button class="btn btn-secondary btn-sm" id="pdfv-zoom-in" title="Zoom in">+</button>
+        <button class="btn btn-secondary btn-sm" id="pdfv-fit" title="Fit the page to the window width">Fit width</button>
+
+        <span style="margin-left: auto; display: flex; gap: 8px;">
+          <button class="btn btn-secondary btn-sm" id="pdfv-newtab" title="Open in the browser's own PDF viewer"><i
+              data-lucide="maximize"></i> Open in tab</button>
+          <button class="btn btn-secondary btn-sm" id="pdfv-download"><i data-lucide="download"></i> Download</button>
+        </span>
+      </div>
+
+      <div class="modal-body" id="pdfv-scroll"
+        style="overflow: auto; max-height: 68vh; background: rgba(0,0,0,0.35); padding: 16px; text-align: center;">
+        <canvas id="pdfv-canvas"
+          style="display: inline-block; max-width: 100%; background: #fff; border-radius: 4px; box-shadow: 0 8px 30px rgba(0,0,0,0.5);"></canvas>
+        <div id="pdfv-status"
+          style="display: none; padding: 48px 20px; font-size: 0.85rem; color: var(--text-muted); line-height: 1.6;"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="modal-lightbox">
     <div class="modal-card modal-large" style="max-width: 90vw; max-height: 90vh; background: rgba(10,15,25,0.95);">
       <div class="modal-header">
         <h3 class="modal-title" id="lightbox-title">Image Viewer</h3>
         <button class="btn btn-secondary btn-icon modal-close"><i data-lucide="x"></i></button>
       </div>
-      <div class="modal-body" style="display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 10px;">
-        <img id="lightbox-img" src="" alt="Preview" style="max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: var(--radius-md);">
+      <div class="modal-body"
+        style="display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 10px;">
+        <img id="lightbox-img" src="" alt="Preview"
+          style="max-width: 100%; max-height: 70vh; object-fit: contain; border-radius: var(--radius-md);">
       </div>
     </div>
   </div>
@@ -632,10 +1304,14 @@
       </div>
       <div class="modal-body" style="display: flex; flex-direction: column; align-items: center; gap: 16px;">
         <p style="font-size: 0.85rem; color: var(--text-muted);">
-          Scan this QR code with your iPhone or Android camera to open DiskPulse on your local network and upload photos/videos directly to your NAS.
+          Scan this QR code with your iPhone or Android camera to open DiskPulse on your local network and upload
+          photos/videos directly to your NAS.
         </p>
-        <div id="qrcode-container" style="padding: 16px; background: #fff; border-radius: var(--radius-md); width: 200px; height: 200px; display: flex; align-items: center; justify-content: center;"></div>
-        <span id="mobile-qr-url" style="font-size: 0.8rem; color: var(--accent-cyan); font-family: var(--font-mono); word-break: break-all;">http://...</span>
+        <div id="qrcode-container"
+          style="padding: 16px; background: #fff; border-radius: var(--radius-md); width: 200px; height: 200px; display: flex; align-items: center; justify-content: center;">
+        </div>
+        <span id="mobile-qr-url"
+          style="font-size: 0.8rem; color: var(--accent-cyan); font-family: var(--font-mono); word-break: break-all;">http://...</span>
       </div>
       <div class="modal-footer" style="justify-content: center;">
         <button class="btn btn-secondary modal-close">Done</button>
@@ -645,8 +1321,10 @@
 
   <!-- Scripts -->
   <script src="js/api.js"></script>
+  <script src="js/folder_picker.js"></script>
   <script src="js/dashboard.js"></script>
   <script src="js/file_manager.js"></script>
+  <script src="js/pdf_viewer.js"></script>
   <script src="js/download_manager.js"></script>
   <script src="js/terminal.js"></script>
   <script src="js/media_player.js"></script>
@@ -654,4 +1332,5 @@
   <script src="js/nas_generator.js"></script>
   <script src="js/app.js"></script>
 </body>
+
 </html>

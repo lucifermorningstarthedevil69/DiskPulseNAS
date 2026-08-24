@@ -4,31 +4,44 @@ import struct
 import wave
 from pathlib import Path
 
-# Dynamically read storage root from config if available
-def _get_storage_root():
+# Fallback storage root, only used if generate_sample_storage() is called
+# without an explicit path (e.g. run directly as a script). Whenever this
+# is invoked from the app itself, the caller passes the actual storage
+# root the user picked in the setup wizard - see generate_sample_storage().
+def _get_storage_root() -> str:
     try:
         import json
-        cfg_file = Path(__file__).parent / "diskpulse_config.json"
+        cfg_file = Path(__file__).parent / "data" / "diskpulse_config.json"
+        if not cfg_file.exists():
+            cfg_file = Path(__file__).parent / "diskpulse_config.json"
         if cfg_file.exists():
-            cfg = json.loads(cfg_file.read_text())
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
             if cfg.get("storage_root"):
                 return cfg["storage_root"]
     except Exception:
         pass
     return str(Path(__file__).parent / "storage_pool")
 
+
+# Kept only as a default fallback for direct/manual invocation.
 STORAGE_ROOT = _get_storage_root()
 
-def create_sample_wav(filepath: Path, duration_secs: float = 8.0, freq: float = 440.0, sample_rate: int = 44100):
-    """Generates a clean playable stereo sine-wave audio file."""
+# Placeholder files are for demoing the file manager UI, not for actually
+# being playable/mountable media - keep them tiny so setup stays fast and
+# doesn't dump hundreds of MB into whatever drive the user picked.
+PLACEHOLDER_SIZE_BYTES = 64 * 1024  # 64 KB
+
+
+def create_sample_wav(filepath: Path, duration_secs: float = 2.0, freq: float = 440.0, sample_rate: int = 44100):
+    """Generates a short, clean playable stereo sine-wave audio file."""
     filepath.parent.mkdir(parents=True, exist_ok=True)
     num_samples = int(duration_secs * sample_rate)
-    
+
     with wave.open(str(filepath), 'w') as wav_file:
         wav_file.setnchannels(2)  # Stereo
         wav_file.setsampwidth(2)  # 16-bit
         wav_file.setframerate(sample_rate)
-        
+
         frames = bytearray()
         for i in range(num_samples):
             t = float(i) / sample_rate
@@ -36,30 +49,49 @@ def create_sample_wav(filepath: Path, duration_secs: float = 8.0, freq: float = 
             envelope = math.sin(math.pi * (i / num_samples))
             val_l = int(16000 * envelope * (math.sin(2 * math.pi * freq * t) * 0.6 + math.sin(2 * math.pi * freq * 1.5 * t) * 0.4))
             val_r = int(16000 * envelope * (math.sin(2 * math.pi * (freq * 1.005) * t) * 0.6 + math.sin(2 * math.pi * freq * 2.0 * t) * 0.4))
-            
+
             val_l = max(-32767, min(32767, val_l))
             val_r = max(-32767, min(32767, val_r))
             frames.extend(struct.pack('<hh', val_l, val_r))
-            
+
         wav_file.writeframes(frames)
 
-def generate_sample_storage():
-    root = Path(STORAGE_ROOT)
+
+def _write_placeholder(filepath: Path, magic: bytes = b""):
+    """Writes a small placeholder file with a realistic magic-byte header
+    (so tools that sniff file type still recognize it) padded to
+    PLACEHOLDER_SIZE_BYTES, instead of a multi-hundred-MB dummy blob."""
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    pad = max(0, PLACEHOLDER_SIZE_BYTES - len(magic))
+    filepath.write_bytes(magic + b"\0" * pad)
+
+
+def generate_sample_storage(storage_root: str = None):
+    """Populate the storage directory with demo content.
+
+    Args:
+        storage_root: absolute path to seed. If omitted, falls back to
+            whatever's in diskpulse_config.json (or the module default) -
+            this fallback exists only for running this script directly;
+            the app itself always passes the path explicitly so demo data
+            lands exactly where the user picked in the setup wizard.
+    """
+    root = Path(storage_root) if storage_root else Path(STORAGE_ROOT)
     root.mkdir(parents=True, exist_ok=True)
 
     print(f"Generating realistic sample data in: {root}")
 
-    # 1. Media - Music
+    # 1. Media - Music (short clips, not full tracks)
     music_dir = root / "Music" / "Synthwave & Ambient"
     music_dir.mkdir(parents=True, exist_ok=True)
-    create_sample_wav(music_dir / "01 - Cyber_Horizon.wav", duration_secs=10.0, freq=330.0)
-    create_sample_wav(music_dir / "02 - Neon_Midnight.wav", duration_secs=12.0, freq=440.0)
-    create_sample_wav(music_dir / "03 - Solar_Pulse_Echoes.wav", duration_secs=8.0, freq=523.25)
-    
-    # 2. Media - Videos & Teaser
+    create_sample_wav(music_dir / "01 - Cyber_Horizon.wav", duration_secs=2.0, freq=330.0)
+    create_sample_wav(music_dir / "02 - Neon_Midnight.wav", duration_secs=2.0, freq=440.0)
+    create_sample_wav(music_dir / "03 - Solar_Pulse_Echoes.wav", duration_secs=2.0, freq=523.25)
+
+    # 2. Media - Videos & Teaser (small placeholders, not real video data)
     video_dir = root / "Movies" / "SciFi 4K"
     video_dir.mkdir(parents=True, exist_ok=True)
-    (video_dir / "Interstellar_NAS_Archive.mkv").write_bytes(b"\x1a\x45\xdf\xa3" + b"\0" * (1024 * 1024 * 4))  # 4MB sample
+    _write_placeholder(video_dir / "Interstellar_NAS_Archive.mkv", magic=b"\x1a\x45\xdf\xa3")
     (video_dir / "Cosmic_Journey_1080p.mp4").write_text("Mock MP4 Stream Container Data\nSample Movie Asset\n", encoding="utf-8")
 
     # 3. Documents
@@ -88,12 +120,13 @@ Drive_2,Seagate IronWolf NAS HDD,4.0,98%,36.2,Optimal
 Drive_3,Samsung 870 EVO SATA SSD,1.0,97%,32.0,Optimal
 """, encoding="utf-8")
 
-    # 4. ISOs & Operating Systems
+    # 4. ISOs & Operating Systems (small placeholders, NOT real bootable ISOs)
     iso_dir = root / "ISOs"
     iso_dir.mkdir(parents=True, exist_ok=True)
-    (iso_dir / "ubuntu-24.04-live-server-amd64.iso").write_bytes(b"CD001\x01\x00" + b"\0" * (1024 * 1024 * 8))
-    (iso_dir / "truenas-scale-24.04.iso").write_bytes(b"CD001\x01\x00" + b"\0" * (1024 * 1024 * 5))
-    (iso_dir / "debian-12.5.0-netinst.iso").write_bytes(b"CD001\x01\x00" + b"\0" * (1024 * 1024 * 2))
+    iso_magic = b"CD001\x01\x00"
+    _write_placeholder(iso_dir / "ubuntu-24.04-live-server-amd64.iso", magic=iso_magic)
+    _write_placeholder(iso_dir / "truenas-scale-24.04.iso", magic=iso_magic)
+    _write_placeholder(iso_dir / "debian-12.5.0-netinst.iso", magic=iso_magic)
 
     # 5. Software & Scripts
     soft_dir = root / "Software" / "NAS Tools"
@@ -115,10 +148,10 @@ rsync -avz --delete /storage/Documents/ /storage/Backups/daily_docs/
 echo "Snapshot completed successfully."
 """, encoding="utf-8")
 
-    # 6. Backups
+    # 6. Backups (small placeholders)
     backup_dir = root / "Backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    (backup_dir / "nas_config_backup_2026.tar.gz").write_bytes(b"\x1f\x8b\x08\x00" + b"\0" * (1024 * 256))
+    _write_placeholder(backup_dir / "nas_config_backup_2026.tar.gz", magic=b"\x1f\x8b\x08\x00")
     (backup_dir / "postgres_db_snapshot.sql").write_text("""-- DiskPulse PostgreSQL Database Dump
 CREATE TABLE telemetry_metrics (
     id SERIAL PRIMARY KEY,
@@ -150,6 +183,7 @@ CREATE TABLE telemetry_metrics (
     (img_dir / "diskpulse_cyber_wallpaper.svg").write_text(svg_content, encoding="utf-8")
 
     print("Demo data generation complete!")
+
 
 if __name__ == "__main__":
     generate_sample_storage()

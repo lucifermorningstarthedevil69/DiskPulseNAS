@@ -3,8 +3,8 @@ import os
 import platform
 import psutil
 from pathlib import Path
-import humanize
-from backend.config import STORAGE_ROOT
+from backend.config import STORAGE_ROOT, format_bytes, format_uptime
+from backend.drive_health import get_drive_health
 
 class TelemetryEngine:
     def __init__(self):
@@ -12,14 +12,6 @@ class TelemetryEngine:
         self.last_net_io = psutil.net_io_counters()
         self.last_time = time.time()
         self.boot_time = psutil.boot_time()
-        
-        # S.M.A.R.T. baseline simulation for drives that do not expose raw hardware sensors
-        self.mock_drive_health = {
-            "Drive_0": {"name": "NVMe System SSD (Disk 0)", "health": 99, "temp": 38.0, "poh": 4120, "reallocated": 0, "status": "Optimal"},
-            "Drive_1": {"name": "WD Red NAS HDD 4TB (Pool A)", "health": 100, "temp": 34.5, "poh": 8940, "reallocated": 0, "status": "Optimal"},
-            "Drive_2": {"name": "Seagate IronWolf 4TB (Pool A)", "health": 98, "temp": 36.2, "poh": 9120, "reallocated": 0, "status": "Optimal"},
-            "Drive_3": {"name": "Samsung 870 EVO 1TB (Cache)", "health": 97, "temp": 32.0, "poh": 5430, "reallocated": 0, "status": "Optimal"},
-        }
 
     def get_system_overview(self):
         current_time = time.time()
@@ -75,9 +67,9 @@ class TelemetryEngine:
                         "used": usage.used,
                         "free": usage.free,
                         "percent": usage.percent,
-                        "total_human": humanize.naturalsize(usage.total, binary=True),
-                        "used_human": humanize.naturalsize(usage.used, binary=True),
-                        "free_human": humanize.naturalsize(usage.free, binary=True),
+                        "total_human": format_bytes(usage.total),
+                        "used_human": format_bytes(usage.used),
+                        "free_human": format_bytes(usage.free),
                     })
                 except (PermissionError, OSError):
                     continue
@@ -101,7 +93,7 @@ class TelemetryEngine:
                 "architecture": platform.machine(),
                 "python_version": platform.python_version(),
                 "uptime_seconds": uptime_seconds,
-                "uptime_human": humanize.naturaldelta(uptime_seconds),
+                "uptime_human": format_uptime(uptime_seconds),
             },
             "cpu": {
                 "percent_total": cpu_percent,
@@ -116,19 +108,19 @@ class TelemetryEngine:
                 "used": virtual_mem.used,
                 "available": virtual_mem.available,
                 "percent": virtual_mem.percent,
-                "total_human": humanize.naturalsize(virtual_mem.total, binary=True),
-                "used_human": humanize.naturalsize(virtual_mem.used, binary=True),
-                "available_human": humanize.naturalsize(virtual_mem.available, binary=True),
+                "total_human": format_bytes(virtual_mem.total),
+                "used_human": format_bytes(virtual_mem.used),
+                "available_human": format_bytes(virtual_mem.available),
                 "swap_total": swap_mem.total,
                 "swap_used": swap_mem.used,
                 "swap_percent": swap_mem.percent,
-                "swap_human": humanize.naturalsize(swap_mem.used, binary=True),
+                "swap_human": format_bytes(swap_mem.used),
             },
             "disk_io": {
                 "read_bytes_sec": read_bytes_sec,
                 "write_bytes_sec": write_bytes_sec,
-                "read_human_sec": f"{humanize.naturalsize(read_bytes_sec)}/s",
-                "write_human_sec": f"{humanize.naturalsize(write_bytes_sec)}/s",
+                "read_human_sec": f"{format_bytes(read_bytes_sec)}/s",
+                "write_human_sec": f"{format_bytes(write_bytes_sec)}/s",
                 "read_iops": round(read_iops, 1),
                 "write_iops": round(write_iops, 1),
                 "total_iops": round(read_iops + write_iops, 1),
@@ -136,8 +128,8 @@ class TelemetryEngine:
             "network_io": {
                 "recv_bytes_sec": net_recv_sec,
                 "sent_bytes_sec": net_sent_sec,
-                "recv_human_sec": f"{humanize.naturalsize(net_recv_sec)}/s",
-                "sent_human_sec": f"{humanize.naturalsize(net_sent_sec)}/s",
+                "recv_human_sec": f"{format_bytes(net_recv_sec)}/s",
+                "sent_human_sec": f"{format_bytes(net_sent_sec)}/s",
             },
             "partitions": partitions_data,
             "storage_pool": pool_categories,
@@ -198,7 +190,7 @@ class TelemetryEngine:
             category_list.append({
                 "name": name,
                 "size_bytes": size,
-                "size_human": humanize.naturalsize(size, binary=True),
+                "size_human": format_bytes(size),
                 "percent": round((size / max(total_pool_bytes, 1)) * 100, 1) if total_pool_bytes > 0 else 0
             })
 
@@ -208,54 +200,22 @@ class TelemetryEngine:
             "used_bytes": pool_used,
             "free_bytes": pool_free,
             "percent": pool_percent,
-            "total_human": humanize.naturalsize(pool_total, binary=True),
-            "used_human": humanize.naturalsize(pool_used, binary=True),
-            "free_human": humanize.naturalsize(pool_free, binary=True),
+            "total_human": format_bytes(pool_total),
+            "used_human": format_bytes(pool_used),
+            "free_human": format_bytes(pool_free),
             "files_count": file_count,
             "dirs_count": dir_count,
             "categories": category_list,
         }
 
     def get_temperatures(self):
-        drives = []
-        # Attempt to read real sensors
-        real_temps = {}
-        if hasattr(psutil, "sensors_temperatures"):
-            try:
-                temps = psutil.sensors_temperatures()
-                if temps:
-                    for name, entries in temps.items():
-                        for entry in entries:
-                            real_temps[f"{name}_{entry.label or 'temp'}"] = entry.current
-            except Exception:
-                pass
+        """Real, cross-platform S.M.A.R.T. drive health & temperature.
 
-        # If real drive sensors found, use them
-        idx = 0
-        for drive_id, mock in self.mock_drive_health.items():
-            # Add dynamic slight fluctuation to simulated temp
-            fluct = ((int(time.time() * 2 + idx * 7) % 7) - 3) * 0.2
-            current_temp = round(mock["temp"] + fluct, 1)
-            
-            # Check alert status
-            temp_status = "Normal"
-            if current_temp >= 55:
-                temp_status = "Critical"
-            elif current_temp >= 45:
-                temp_status = "Warning"
-
-            drives.append({
-                "id": drive_id,
-                "name": mock["name"],
-                "health_percent": mock["health"],
-                "temperature_c": current_temp,
-                "temp_status": temp_status,
-                "power_on_hours": mock["poh"],
-                "reallocated_sectors": mock["reallocated"],
-                "status": mock["status"],
-            })
-            idx += 1
-
-        return drives
+        Delegates to the drive_health module which reads live data from the
+        host (PowerShell on Windows, smartctl/lsblk on Linux) with a cached,
+        background-refreshed snapshot so this stays cheap on every telemetry
+        tick.
+        """
+        return get_drive_health()
 
 telemetry_engine = TelemetryEngine()

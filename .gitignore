@@ -1,0 +1,18 @@
+# Machine-specific setup state and history in data directory
+data/
+diskpulse_config.json
+speedtest_history.json
+diskpulse_server_error.log
+
+# Storage pool / demo data
+storage_pool/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# PyInstaller builds
+build/
+dist/

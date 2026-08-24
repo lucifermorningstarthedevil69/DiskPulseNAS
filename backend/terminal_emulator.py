@@ -2,11 +2,10 @@ import os
 import shlex
 import shutil
 import time
-import humanize
 import psutil
 from pathlib import Path
 from typing import Dict, List, Any, Tuple
-from backend.config import STORAGE_ROOT
+from backend.config import STORAGE_ROOT, format_bytes_short
 
 # ANSI color helper codes
 C_RESET = "\033[0m"
@@ -20,7 +19,13 @@ C_CYAN = "\033[36m"
 C_WHITE = "\033[37m"
 
 class TerminalSession:
-    def __init__(self, session_id: str, root_dir: str = STORAGE_ROOT):
+    def __init__(self, session_id: str, root_dir: str = None):
+        # Resolve lazily (not at import time) so a storage root chosen
+        # later via the setup wizard is picked up for new sessions
+        # without requiring a server restart.
+        if root_dir is None:
+            import backend.config as _config
+            root_dir = _config.STORAGE_ROOT
         self.session_id = session_id
         self.root_dir = Path(root_dir).resolve()
         self.current_dir = self.root_dir
@@ -145,7 +150,7 @@ class TerminalSession:
             for item in items:
                 stat = item.stat()
                 perms = ("d" if item.is_dir() else "-") + "rwxr-xr-x"
-                sz = humanize.naturalsize(stat.st_size, binary=True) if item.is_file() else "4.0K"
+                sz = format_bytes_short(stat.st_size) if item.is_file() else "4.0K"
                 mtime = time.strftime("%b %d %H:%M", time.localtime(stat.st_mtime))
                 color = C_CYAN if item.is_dir() else C_WHITE
                 lines.append(f"{perms} 1 nasuser storage {sz:>8} {mtime} {color}{item.name}{C_RESET}")
@@ -303,15 +308,15 @@ class TerminalSession:
                 if child.is_file():
                     sz = child.stat().st_size
                     total += sz
-                    lines.append(f"{humanize.naturalsize(sz, binary=True):>8}\t{child.name}")
+                    lines.append(f"{format_bytes_short(sz):>8}\t{child.name}")
                 elif child.is_dir():
                     dir_sz = sum(f.stat().st_size for f in child.rglob('*') if f.is_file())
                     total += dir_sz
-                    lines.append(f"{humanize.naturalsize(dir_sz, binary=True):>8}\t{child.name}/")
-            lines.append(f"{C_BOLD}{humanize.naturalsize(total, binary=True):>8}\ttotal{C_RESET}")
+                    lines.append(f"{format_bytes_short(dir_sz):>8}\t{child.name}/")
+            lines.append(f"{C_BOLD}{format_bytes_short(total):>8}\ttotal{C_RESET}")
         else:
             sz = target.stat().st_size
-            lines.append(f"{humanize.naturalsize(sz, binary=True):>8}\t{target.name}")
+            lines.append(f"{format_bytes_short(sz):>8}\t{target.name}")
         return "\n".join(lines) + "\n", 0
 
     def _cmd_df(self, args: List[str]) -> Tuple[str, int]:
@@ -322,9 +327,9 @@ class TerminalSession:
                     usage = psutil.disk_usage(part.mountpoint)
                     lines.append(
                         f"{part.device:<24} "
-                        f"{humanize.naturalsize(usage.total, binary=True):<10} "
-                        f"{humanize.naturalsize(usage.used, binary=True):<10} "
-                        f"{humanize.naturalsize(usage.free, binary=True):<10} "
+                        f"{format_bytes_short(usage.total):<10} "
+                        f"{format_bytes_short(usage.used):<10} "
+                        f"{format_bytes_short(usage.free):<10} "
                         f"{f'{usage.percent}%':<6} "
                         f"{part.mountpoint}"
                     )
@@ -345,7 +350,7 @@ class TerminalSession:
         out = (
             f"  File: {C_BOLD}{target.name}{C_RESET}\n"
             f"  Type: {file_type}\n"
-            f"  Size: {st.st_size} bytes ({humanize.naturalsize(st.st_size, binary=True)})\n"
+            f"  Size: {st.st_size} bytes ({format_bytes_short(st.st_size)})\n"
             f"Access: {oct(st.st_mode)[-3:]} / (rwxr-xr-x)\n"
             f"Modify: {time.ctime(st.st_mtime)}\n"
             f"Access: {time.ctime(st.st_atime)}\n"
@@ -446,7 +451,7 @@ class TerminalSession:
         mem = psutil.virtual_memory()
         lines = [
             f"{C_BOLD}DiskPulse NAS Process & System Monitor{C_RESET}",
-            f"CPU Usage: {C_GREEN}{cpu}%{C_RESET} | Mem Usage: {C_GREEN}{mem.percent}%{C_RESET} ({humanize.naturalsize(mem.used, binary=True)} / {humanize.naturalsize(mem.total, binary=True)})",
+            f"CPU Usage: {C_GREEN}{cpu}%{C_RESET} | Mem Usage: {C_GREEN}{mem.percent}%{C_RESET} ({format_bytes_short(mem.used)} / {format_bytes_short(mem.total)})",
             "",
             f"{'PID':<8} {'USER':<10} {'%CPU':<8} {'%MEM':<8} {'COMMAND'}"
         ]
@@ -472,8 +477,8 @@ class TerminalSession:
         sw = psutil.swap_memory()
         out = (
             f"               total        used        free      shared  buff/cache   available\n"
-            f"Mem:     {humanize.naturalsize(vm.total, binary=True):>11} {humanize.naturalsize(vm.used, binary=True):>11} {humanize.naturalsize(vm.free, binary=True):>11}        0B {humanize.naturalsize(getattr(vm, 'cached', 0), binary=True):>11} {humanize.naturalsize(vm.available, binary=True):>11}\n"
-            f"Swap:    {humanize.naturalsize(sw.total, binary=True):>11} {humanize.naturalsize(sw.used, binary=True):>11} {humanize.naturalsize(sw.free, binary=True):>11}\n"
+            f"Mem:     {format_bytes_short(vm.total):>11} {format_bytes_short(vm.used):>11} {format_bytes_short(vm.free):>11}        0B {format_bytes_short(getattr(vm, 'cached', 0)):>11} {format_bytes_short(vm.available):>11}\n"
+            f"Swap:    {format_bytes_short(sw.total):>11} {format_bytes_short(sw.used):>11} {format_bytes_short(sw.free):>11}\n"
         )
         return out, 0
 

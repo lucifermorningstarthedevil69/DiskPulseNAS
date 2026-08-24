@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import socket
 from pathlib import Path
 from typing import List, Optional
 
@@ -8,18 +9,21 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, F
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
-from backend.config import STORAGE_ROOT, FRONTEND_DIR, TELEMETRY_INTERVAL_SECS, DEBUG
+from backend.config import STORAGE_ROOT, FRONTEND_DIR, TELEMETRY_INTERVAL_SECS, DEBUG, PORT, folder_for_extension
 from backend.telemetry import telemetry_engine
 from backend.file_manager import file_manager
 from backend.download_engine import download_manager
-from backend.terminal_emulator import get_or_create_session
+from backend.terminal_emulator import get_or_create_session, sessions
 from backend.nas_generator import nas_generator
 from backend.setup_manager import (
     get_available_drives, apply_setup, is_setup_complete,
     reset_setup, load_config
 )
+from backend.speedtest_service import speedtest_manager, run_speed_test, quick_ping_test
+
 
 app = FastAPI(
     title="DiskPulse NAS Hub",
@@ -34,6 +38,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("shutdown")
+async def _shutdown_kill_streams():
+    """Kill any ffmpeg transcodes still running when the server stops, so no
+    source file stays locked and shutdown doesn't hang on a dangling stream."""
+    try:
+        from backend.media_service import terminate_all_streams
+        n = terminate_all_streams()
+        if n:
+            print(f"Stopped {n} active media stream(s) on shutdown.")
+    except Exception:
+        pass
+
+
+@app.on_event("startup")
+async def _silence_windows_disconnect_noise():
+    """On Windows the proactor event loop logs a scary traceback every time a
+    remote end (a browser tab reloading, a killed ffmpeg child) drops a
+    connection before we close our side: a ConnectionResetError raised inside
+    ``_ProactorBasePipeTransport._call_connection_lost``. It is harmless
+    disconnect noise, not an application error — swallow exactly that case and
+    keep the default handling for everything else."""
+    if os.name != "nt":
+        return
+    loop = asyncio.get_running_loop()
+
+    def _handler(lp, context):
+        exc = context.get("exception")
+        message = context.get("message") or ""
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)) \
+                and "_call_connection_lost" in message:
+            return
+        lp.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
 
 # ----------------- Request Models -----------------
 class MkdirRequest(BaseModel):
@@ -68,6 +108,19 @@ class AddDownloadRequest(BaseModel):
     category: Optional[str] = None
     custom_folder: str = ""
     custom_filename: Optional[str] = None
+    backend: str = "auto"
+    mode: str = "video"            # video | audio
+    max_height: str = "best"       # best | 2160 | 1440 | 1080 | 720 | 480 | 360
+    audio_format: str = "mp3"      # mp3 | m4a | opus | flac | wav
+    audio_bitrate: str = "192"     # 320 | 256 | 192 | 128 | 96
+    format_id: str = ""            # exact yt-dlp stream id picked from the probe
+    progressive: bool = False      # True if that stream is already muxed (video+audio)
+    sort_by_type: bool = True      # drop the finished file into a type subfolder
+    meta_title: str = ""           # probed media title, shown on the task card
+    meta_thumbnail: str = ""       # probed media thumbnail URL, shown on the card
+
+class ProbeRequest(BaseModel):
+    url: str
 
 class TerminalExecRequest(BaseModel):
     session_id: str = "default"
@@ -90,6 +143,28 @@ async def websocket_telemetry_endpoint(websocket: WebSocket):
         pass
     except Exception:
         pass
+
+# ----------------- Server Info Routes -----------------
+def _lan_ip() -> str:
+    """Best-effort LAN address other devices can reach this server on.
+
+    Used by the web player's cast button: a cast target fetches media URLs
+    itself, so a page opened on localhost needs the server's network address.
+    The UDP-connect trick picks the OS routing address without sending data.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return "127.0.0.1"
+
+@app.get("/api/server/info")
+async def get_server_info():
+    return {"host": _lan_ip(), "port": PORT}
 
 # ----------------- File Manager Routes -----------------
 @app.get("/api/files/list")
@@ -137,15 +212,38 @@ async def rename_file(req: RenameRequest):
 
 @app.post("/api/files/move")
 async def move_files(req: MoveCopyRequest):
-    return file_manager.move_items(req.source_paths, req.target_folder)
+    # Returns immediately with an op_id; the actual move runs on a worker
+    # thread and reports live progress via /api/files/operation/{op_id}.
+    res = file_manager.start_move(req.source_paths, req.target_folder)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
 
 @app.post("/api/files/copy")
 async def copy_files(req: MoveCopyRequest):
-    return file_manager.copy_items(req.source_paths, req.target_folder)
+    res = file_manager.start_copy(req.source_paths, req.target_folder)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
+
+@app.get("/api/files/operation/{op_id}")
+async def get_file_operation(op_id: str):
+    state = file_manager.get_transfer_status(op_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired operation")
+    return state
 
 @app.post("/api/files/delete")
 async def delete_files(req: DeleteRequest):
     return file_manager.delete_items(req.paths)
+
+def _cleanup_file(path: str):
+    """Best-effort delete of a temp archive once it has been streamed out."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
 
 @app.post("/api/files/zip")
 async def create_zip(req: BatchZipRequest):
@@ -155,7 +253,27 @@ async def create_zip(req: BatchZipRequest):
     return FileResponse(
         zip_path,
         filename="diskpulse_archive.zip",
-        media_type="application/zip"
+        media_type="application/zip",
+        background=BackgroundTask(_cleanup_file, zip_path),
+    )
+
+
+@app.post("/api/files/zip-download")
+async def create_zip_download(paths: List[str] = Form(...)):
+    """Form-based twin of /api/files/zip.
+
+    The frontend submits a hidden <form> here (targeting an off-screen iframe)
+    instead of fetch()+blob(). The browser then streams the archive straight to
+    disk, so multi-GB selections no longer have to fit in a JS Blob in RAM.
+    """
+    zip_path = file_manager.create_zip_archive(paths)
+    if not zip_path or not os.path.exists(zip_path):
+        raise HTTPException(status_code=400, detail="Failed to create zip archive")
+    return FileResponse(
+        zip_path,
+        filename="diskpulse_archive.zip",
+        media_type="application/zip",
+        background=BackgroundTask(_cleanup_file, zip_path),
     )
 
 @app.get("/api/files/download")
@@ -183,31 +301,78 @@ async def stream_raw_file(path: str):
     )
 
 # ----------------- Multi-Device Uploader Routes -----------------
+def _truthy(value: str) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 @app.post("/api/upload")
 async def upload_files(
     target_folder: str = Form(""),
+    sort_by_type: str = Form("true"),
     files: List[UploadFile] = File(...)
 ):
-    dest_dir = file_manager._resolve_safe_path(target_folder)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    
+    """Save uploaded files under the storage root.
+
+    Two organising modes:
+      • sort_by_type ON  → each file is dropped into a type subfolder
+        (Images / Video / Audio / … / Other) nested inside ``target_folder``.
+      • sort_by_type OFF → the file's own relative path is preserved, so an
+        uploaded folder keeps its structure. Folder uploads arrive with the
+        relative path in ``UploadFile.filename`` (the browser's
+        webkitRelativePath, sent as the multipart filename).
+
+    Every destination is re-validated through ``_resolve_safe_path`` so a
+    crafted relative path can never escape the storage root.
+    """
+    sort = _truthy(sort_by_type)
+    root = str(file_manager.root_dir)
+    base_rel = (target_folder or "").strip().strip("/\\")
+
     uploaded_files = []
+    skipped = []
     for f in files:
-        safe_name = os.path.basename(f.filename or "uploaded_file")
-        file_path = dest_dir / safe_name
-        
+        # Folder uploads carry a relative path ("MyFolder/sub/file.jpg");
+        # normalise separators and split off the basename.
+        raw = (f.filename or "uploaded_file").replace("\\", "/")
+        basename = os.path.basename(raw)
+        if not basename or basename in (".", ".."):
+            basename = "uploaded_file"
+        ext = os.path.splitext(basename)[1]
+
+        if sort:
+            # Ignore any original structure; route purely by file type.
+            sub_rel = folder_for_extension(ext)
+        else:
+            # Preserve the uploaded folder's structure.
+            sub_rel = os.path.dirname(raw)
+
+        combined_rel = "/".join(p for p in (base_rel, sub_rel) if p)
+        dest_dir = file_manager._resolve_safe_path(combined_rel)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = dest_dir / basename
         # Handle collision by appending counter
         counter = 1
-        base, ext = os.path.splitext(safe_name)
+        stem, fext = os.path.splitext(basename)
         while file_path.exists():
-            file_path = dest_dir / f"{base}_{counter}{ext}"
+            file_path = dest_dir / f"{stem}_{counter}{fext}"
             counter += 1
+
+        # Final belt-and-braces traversal guard on the fully-resolved path.
+        if not str(file_path.resolve()).startswith(root):
+            skipped.append(raw)
+            continue
 
         contents = await f.read()
         file_path.write_bytes(contents)
         uploaded_files.append(file_manager._get_file_info(file_path))
 
-    return {"success": True, "uploaded": uploaded_files, "count": len(uploaded_files)}
+    return {
+        "success": True,
+        "uploaded": uploaded_files,
+        "count": len(uploaded_files),
+        "skipped": skipped,
+    }
 
 # ----------------- Download Manager Routes -----------------
 @app.get("/api/downloads")
@@ -220,9 +385,54 @@ async def add_download(req: AddDownloadRequest):
         url=req.url,
         category=req.category,
         custom_folder=req.custom_folder,
-        custom_filename=req.custom_filename
+        custom_filename=req.custom_filename,
+        backend=req.backend,
+        mode=req.mode,
+        max_height=req.max_height,
+        audio_format=req.audio_format,
+        audio_bitrate=req.audio_bitrate,
+        format_id=req.format_id,
+        progressive=req.progressive,
+        sort_by_type=req.sort_by_type,
+        meta_title=req.meta_title,
+        meta_thumbnail=req.meta_thumbnail,
     )
     return task.to_dict()
+
+@app.post("/api/downloads/probe")
+async def probe_download(req: ProbeRequest):
+    """Inspect a media URL and report the qualities that actually exist for it.
+
+    Runs in a thread because yt-dlp extraction is blocking network I/O and would
+    otherwise stall the event loop (and the 1s telemetry stream).
+    """
+    from backend.ytdlp_service import probe_formats, friendly_error
+
+    loop = asyncio.get_event_loop()
+    try:
+        data = await loop.run_in_executor(None, probe_formats, req.url.strip())
+        return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": friendly_error(e)}
+
+@app.get("/api/downloads/ytdlp-version")
+async def get_ytdlp_version():
+    """Installed yt-dlp version, staleness warning, ffmpeg + cookie availability."""
+    from backend.ytdlp_service import ytdlp_version_info, cookie_status
+
+    loop = asyncio.get_event_loop()
+    info = ytdlp_version_info()
+    # Cookie detection reads browser DBs, so keep it off the event loop.
+    info["cookies"] = await loop.run_in_executor(None, cookie_status)
+    return info
+
+@app.post("/api/downloads/ytdlp-update")
+async def post_ytdlp_update():
+    """Run `pip install -U yt-dlp` — the usual fix for YouTube bot-check errors."""
+    from backend.ytdlp_service import update_ytdlp
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, update_ytdlp)
 
 @app.post("/api/downloads/pause/{task_id}")
 async def pause_download(task_id: str):
@@ -249,6 +459,127 @@ async def delete_download(task_id: str, delete_file: bool = False):
     success = download_manager.delete_task(task_id, delete_file)
     return {"success": success}
 
+# ----------------- Web Media Player Routes -----------------
+# Plain HTML5 <video> can't switch embedded audio tracks or render embedded
+# subtitles, so these endpoints use ffmpeg/ffprobe to introspect a file and
+# (when needed) remux/transcode it on demand with a chosen audio track.
+
+@app.get("/api/media/info")
+async def media_info(path: str):
+    """List a media file's audio/subtitle/video tracks + any sidecar subs."""
+    from backend.media_service import probe_media, find_external_subs, has_ffmpeg, has_ffprobe
+
+    target = file_manager._resolve_safe_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, probe_media, str(target))
+    info["external_subs"] = await loop.run_in_executor(None, find_external_subs, str(target))
+    info["ffmpeg"] = has_ffmpeg()
+    info["ffprobe"] = has_ffprobe()
+    return info
+
+
+@app.get("/api/media/thumb")
+async def media_thumb(path: str, t: float = 0.0, w: int = 200):
+    """Return a small JPEG frame at ``t`` seconds — powers the scrub-bar hover preview."""
+    from backend.media_service import grab_thumbnail, has_ffmpeg
+
+    if not has_ffmpeg():
+        raise HTTPException(status_code=503, detail="ffmpeg is not installed on the server.")
+
+    target = file_manager._resolve_safe_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    loop = asyncio.get_event_loop()
+    img = await loop.run_in_executor(None, grab_thumbnail, str(target), t, w)
+    if not img:
+        raise HTTPException(status_code=422, detail="Could not extract a frame at this position.")
+    return Response(content=img, media_type="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.get("/api/media/subtitle")
+async def media_subtitle(
+    path: str,
+    kind: str = "embedded",     # embedded | external
+    track: int = 0,             # embedded: type-relative subtitle index
+    file: str = "",             # external: sidecar filename (same dir as video)
+    offset: float = 0.0,        # shift cues earlier (matches a seeked stream's -ss)
+):
+    """Return a subtitle as WebVTT so it can be attached via <track>."""
+    from backend.media_service import extract_subtitle_vtt, convert_external_sub_vtt, shift_vtt
+
+    target = file_manager._resolve_safe_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    loop = asyncio.get_event_loop()
+    if kind == "external":
+        # Sidecar lives beside the video; keep it inside the storage root.
+        sub_path = (target.parent / os.path.basename(file)).resolve()
+        if not str(sub_path).startswith(str(file_manager.root_dir)) or not sub_path.is_file():
+            raise HTTPException(status_code=404, detail="Subtitle file not found")
+        vtt = await loop.run_in_executor(None, convert_external_sub_vtt, str(sub_path))
+    else:
+        vtt = await loop.run_in_executor(None, extract_subtitle_vtt, str(target), track)
+
+    if not vtt:
+        raise HTTPException(status_code=422, detail="Could not produce WebVTT for this subtitle (it may be image-based).")
+    if offset and offset > 0:
+        vtt = await loop.run_in_executor(None, shift_vtt, vtt, offset)
+    return Response(content=vtt, media_type="text/vtt; charset=utf-8",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/media/stream")
+async def media_stream(
+    path: str,
+    audio: int = 0,            # type-relative audio track index to play
+    t: float = 0.0,            # start offset in seconds (for seeking)
+    vcodec: str = "",          # optional hint from /info to skip a re-probe
+):
+    """Stream the file as fragmented MP4 with the chosen audio track.
+
+    Video is copied when it's already H.264 (cheap), otherwise transcoded.
+    Used whenever the container/codec isn't browser-native or the user picks a
+    non-default audio track.
+    """
+    from backend.media_service import stream_transcode, probe_media, has_ffmpeg
+
+    if not has_ffmpeg():
+        raise HTTPException(status_code=503, detail="ffmpeg is not installed on the server.")
+
+    target = file_manager._resolve_safe_path(path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if not vcodec:
+        loop = asyncio.get_event_loop()
+        probed = await loop.run_in_executor(None, probe_media, str(target))
+        vcodec = ((probed.get("video") or {}).get("codec") or "") if probed.get("ok") else ""
+
+    generator = stream_transcode(str(target), audio_rel_index=audio,
+                                 start_time=t, video_codec=vcodec)
+    return StreamingResponse(generator, media_type="video/mp4",
+                             headers={"Cache-Control": "no-store"})
+
+
+# ----------------- Speed Test Routes -----------------
+@app.post("/api/speedtest/run")
+async def trigger_speedtest():
+    return await run_speed_test()
+
+@app.get("/api/speedtest/latest")
+async def get_latest_speedtest():
+    return speedtest_manager.get_status()
+
+@app.get("/api/speedtest/ping")
+async def get_quick_ping():
+    return await quick_ping_test()
+
 # ----------------- Embedded Terminal Routes -----------------
 @app.post("/api/terminal/exec")
 async def terminal_exec(req: TerminalExecRequest):
@@ -263,9 +594,9 @@ async def websocket_terminal(websocket: WebSocket):
     session = get_or_create_session(session_id)
     
     # Send welcome banner
-    banner, _ = session.execute("diskpulse")
+    banner_result = session.execute("diskpulse")
     await websocket.send_json({
-        "output": banner + f"Interactive NAS Shell initialized.\nType 'help' for commands.\n",
+        "output": banner_result["output"] + f"Interactive NAS Shell initialized.\nType 'help' for commands.\n",
         "cwd": session.get_prompt_path(),
         "exit_code": 0
     })
@@ -353,22 +684,33 @@ async def configure_setup(req: SetupConfigRequest):
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Setup failed"))
 
-    # Seed demo data if requested
+    new_root = result["storage_root"]
+
+    # ── Propagate the newly chosen storage root to every already-running
+    # singleton / module. These were all instantiated at server startup
+    # using the OLD default root, so without this step the wizard's
+    # drive/path choice (and the "fresh start" option) silently has no
+    # effect until the whole process is restarted.
+    import backend.config as _cfg_mod
+    _cfg_mod.STORAGE_ROOT = new_root
+
+    import backend.download_engine as _download_engine_mod
+    _download_engine_mod.STORAGE_ROOT = new_root
+
+    import backend.telemetry as _telemetry_mod
+    _telemetry_mod.STORAGE_ROOT = new_root
+
+    # file_manager is a long-lived singleton with the root baked into
+    # self.root_dir at construction time - repoint it directly.
+    file_manager.set_root(new_root)
+
+    # Seed demo data if requested - pass the chosen path explicitly so it
+    # always lands in the wizard-selected directory, never the repo's
+    # own default folder.
     if req.seed_demo_data:
         try:
             from generate_demo_data import generate_sample_storage
-            import importlib, sys
-            # Re-import with the new storage root
-            import backend.config as _cfg_mod
-            _cfg_mod.STORAGE_ROOT = result["storage_root"]
-            from pathlib import Path as _P
-            _P(result["storage_root"]).mkdir(parents=True, exist_ok=True)
-            generate_sample_storage.__globals__['STORAGE_ROOT'] = result["storage_root"]
-            import generate_demo_data as _gdd
-            import backend.config as _cfg
-            _cfg.STORAGE_ROOT = result["storage_root"]
-            _gdd.STORAGE_ROOT = result["storage_root"]
-            _gdd.generate_sample_storage()
+            generate_sample_storage(new_root)
         except Exception as e:
             print(f"Demo data seeding warning: {e}")
 
@@ -385,21 +727,45 @@ async def reset_configuration():
 @app.get("/")
 async def root_handler():
     """Serve setup.html if not yet configured, else the main app."""
+    # no-cache so freshly-edited markup (new buttons, etc.) is always served.
+    no_cache = {"Cache-Control": "no-cache"}
     if not is_setup_complete():
         setup_file = FRONTEND_DIR / "setup.html"
         if setup_file.exists():
-            return FileResponse(str(setup_file))
+            return FileResponse(str(setup_file), headers=no_cache)
     main_file = FRONTEND_DIR / "index.html"
     if main_file.exists():
-        return FileResponse(str(main_file))
+        return FileResponse(str(main_file), headers=no_cache)
     return JSONResponse({"error": "Frontend not found"}, status_code=404)
 
 
 # ----------------- Static Frontend Assets (CSS / JS / fonts) -----------------
+class NoCacheStaticFiles(StaticFiles):
+    """StaticFiles that asks browsers to always revalidate before reusing a file.
+
+    Sends ``Cache-Control: no-cache`` so an edited CSS/JS file is picked up on
+    the next reload instead of a stale copy being served silently from the
+    browser's heuristic cache. ETag / Last-Modified revalidation (304) still
+    works, so this stays cheap on the wire while guaranteeing freshness during
+    active development.
+    """
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Mount the frontend directory under /static so CSS/JS can be found,
 # AND also mount at root so /css/... and /js/... paths work directly.
 if FRONTEND_DIR.exists():
-    app.mount("/css",    StaticFiles(directory=str(FRONTEND_DIR / "css")),    name="fe_css")
-    app.mount("/js",     StaticFiles(directory=str(FRONTEND_DIR / "js")),     name="fe_js")
+    app.mount("/css",    NoCacheStaticFiles(directory=str(FRONTEND_DIR / "css")), name="fe_css")
+    app.mount("/js",     NoCacheStaticFiles(directory=str(FRONTEND_DIR / "js")),  name="fe_js")
     # Catch-all for any other static assets (images, fonts, etc.)
-    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR)),            name="fe_assets")
+    app.mount("/assets", NoCacheStaticFiles(directory=str(FRONTEND_DIR)),         name="fe_assets")
+    # Optionally vendored third-party libraries (PDF.js). Absent by default: the
+    # frontend probes /vendor first and falls back to a CDN, so this mount is
+    # what makes a fully offline / air-gapped install possible.
+    # See frontend/vendor/pdfjs/README.md.
+    vendor_dir = FRONTEND_DIR / "vendor"
+    if vendor_dir.exists():
+        app.mount("/vendor", NoCacheStaticFiles(directory=str(vendor_dir)),       name="fe_vendor")

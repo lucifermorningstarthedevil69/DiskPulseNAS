@@ -7,3 +7,19 @@ humanize>=4.9.0
 psutil>=5.9.8
 pydantic>=2.6.0
 python-multipart>=0.0.9
+# [default] pulls in curl_cffi (browser TLS impersonation) — required by some
+# extractors such as Dailymotion, plus mutagen/pycryptodomex/websockets/brotli.
+yt-dlp[default]
+libtorrent
+torrentp
+pillow>=10.0.0
+pywebview>=5.0.0
+pystray>=0.19.5
+customtkinter>=5.2.0
+
+# Speed test uses Cloudflare's edge over the Python stdlib — no library needed.
+# For full drive S.M.A.R.T. metrics (temperature / power-on hours / health):
+#   • Linux:   install smartmontools (`sudo apt install smartmontools`) and run with sudo
+#   • Windows: install smartmontools (`winget install smartmontools`) for SATA/USB drive
+#              temperature & power-on hours, then run DiskPulse as Administrator.
+#              (Windows' built-in storage cmdlets only expose those metrics for NVMe drives.)

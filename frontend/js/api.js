@@ -1,6 +1,43 @@
 /**
  * DiskPulse API & WebSocket Client Service
  */
+
+// ── Canonical human formatting ────────────────────────────────────────────────
+// These MIRROR backend/config.py (format_bytes / format_uptime) byte for byte.
+// Some numbers are formatted server-side (*_human in the telemetry payload) and
+// some client-side (live upload progress, chart tooltips); if the two drifted,
+// the same drive would read differently in two places on one screen.
+// Change one, change the other.
+const DP_BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+
+/** 1503238553 -> "1.4 GB". 1024-based, labelled KB/MB/GB/TB like Windows. */
+function formatSize(bytes) {
+  let size = Number(bytes);
+  if (!isFinite(size) || size <= 0) return '0 B';
+
+  let i = 0;
+  while (size >= 1024 && i < DP_BYTE_UNITS.length - 1) {
+    size /= 1024;
+    i++;
+  }
+  // A decimal only below 10, so "4.0 KB" stays precise and "932 GB" stays short.
+  const text = (i === 0 || size >= 10) ? String(Math.round(size)) : size.toFixed(1);
+  return `${text} ${DP_BYTE_UNITS[i]}`;
+}
+
+/** 15129 -> "4h 12m"; 188400 -> "2d 4h 20m". Zero-padded so the width is stable. */
+function formatUptime(seconds) {
+  let total = Math.floor(Number(seconds));
+  if (!isFinite(total) || total < 0) total = 0;
+
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const mm = String(mins).padStart(2, '0');
+
+  return days ? `${days}d ${hours}h ${mm}m` : `${hours}h ${mm}m`;
+}
+
 class DiskPulseAPI {
   constructor() {
     this.baseUrl = window.location.origin;
@@ -78,6 +115,11 @@ class DiskPulseAPI {
     connect();
   }
 
+  // Server Endpoints
+  async getServerInfo() {
+    return this.request('/api/server/info');
+  }
+
   // File Manager Endpoints
   async listFiles(path = "") {
     return this.request(`/api/files/list?path=${encodeURIComponent(path)}`);
@@ -133,6 +175,12 @@ class DiskPulseAPI {
     });
   }
 
+  // Live progress for a background move/copy (returns {status, total_bytes,
+  // transferred_bytes, ...}); poll it until status is no longer "running".
+  async getFileOperation(opId) {
+    return this.request(`/api/files/operation/${opId}`);
+  }
+
   async deleteFiles(paths) {
     return this.request('/api/files/delete', {
       method: 'POST',
@@ -148,21 +196,72 @@ class DiskPulseAPI {
     return `${this.baseUrl}/api/files/raw?path=${encodeURIComponent(path)}`;
   }
 
+  // Web Media Player (ffprobe/ffmpeg-backed) Endpoints
+  async getMediaInfo(path) {
+    return this.request(`/api/media/info?path=${encodeURIComponent(path)}`);
+  }
+
+  getMediaStreamUrl(path, audioIdx = 0, t = 0, vcodec = "") {
+    const params = new URLSearchParams({
+      path, audio: String(audioIdx), t: String(t || 0)
+    });
+    if (vcodec) params.set('vcodec', vcodec);
+    return `${this.baseUrl}/api/media/stream?${params.toString()}`;
+  }
+
+  getSubtitleUrl(path, { kind = 'embedded', track = 0, file = '', offset = 0 } = {}) {
+    const params = new URLSearchParams({ path, kind });
+    if (kind === 'external') params.set('file', file);
+    else params.set('track', String(track));
+    if (offset && offset > 0) params.set('offset', String(offset));
+    return `${this.baseUrl}/api/media/subtitle?${params.toString()}`;
+  }
+
+  getMediaThumbUrl(path, t = 0, w = 200) {
+    const params = new URLSearchParams({ path, t: String(t || 0), w: String(w || 200) });
+    return `${this.baseUrl}/api/media/thumb?${params.toString()}`;
+  }
+
   // Download Manager Endpoints
   async getDownloads() {
     return this.request('/api/downloads');
   }
 
-  async addDownload(url, category = null, customFolder = "", customFilename = null) {
+  async addDownload(url, category = null, customFolder = "", customFilename = null, opts = {}) {
     return this.request('/api/downloads/add', {
       method: 'POST',
       body: JSON.stringify({
         url,
         category,
         custom_folder: customFolder,
-        custom_filename: customFilename
+        custom_filename: customFilename,
+        backend: opts.backend || 'auto',
+        mode: opts.mode || 'video',
+        max_height: opts.maxHeight || 'best',
+        audio_format: opts.audioFormat || 'mp3',
+        audio_bitrate: opts.audioBitrate || '192',
+        format_id: opts.formatId || '',
+        progressive: opts.progressive || false,
+        sort_by_type: opts.sortByType !== false,
+        meta_title: opts.metaTitle || '',
+        meta_thumbnail: opts.metaThumbnail || ''
       })
     });
+  }
+
+  async probeMedia(url) {
+    return this.request('/api/downloads/probe', {
+      method: 'POST',
+      body: JSON.stringify({ url })
+    });
+  }
+
+  async getYtdlpVersion() {
+    return this.request('/api/downloads/ytdlp-version');
+  }
+
+  async updateYtdlp() {
+    return this.request('/api/downloads/ytdlp-update', { method: 'POST' });
   }
 
   async pauseDownload(taskId) {
@@ -183,6 +282,19 @@ class DiskPulseAPI {
 
   async deleteDownload(taskId, deleteFile = false) {
     return this.request(`/api/downloads/${taskId}?delete_file=${deleteFile}`, { method: 'DELETE' });
+  }
+
+  // Speed Test Endpoints
+  async getSpeedTestLatest() {
+    return this.request('/api/speedtest/latest');
+  }
+
+  async runSpeedTest() {
+    return this.request('/api/speedtest/run', { method: 'POST' });
+  }
+
+  async getSpeedTestPing() {
+    return this.request('/api/speedtest/ping');
   }
 
   // Terminal API

@@ -4,6 +4,7 @@
 class DiskPulseApp {
   constructor() {
     this.currentView = 'dashboard';
+    this.previousView = null;
     this.bindGlobalEvents();
     this.init();
   }
@@ -36,6 +37,11 @@ class DiskPulseApp {
       document.getElementById('sidebar')?.classList.toggle('mobile-open');
     });
 
+    // Tapping the backdrop closes the drawer
+    document.getElementById('sidebar-overlay')?.addEventListener('click', () => {
+      document.getElementById('sidebar')?.classList.remove('mobile-open');
+    });
+
     // Quick Action Bar Buttons
     document.getElementById('quick-btn-terminal')?.addEventListener('click', () => {
       this.switchView('terminal');
@@ -65,6 +71,18 @@ class DiskPulseApp {
   }
 
   switchView(viewName) {
+    // Leaving the media player? Fully stop playback so the server-side ffmpeg
+    // transcode is torn down and the source file is released. A paused <video>
+    // on its own keeps the /api/media/stream connection (and the file lock)
+    // open, which blocks move/rename/delete and stalls server shutdown.
+    if (this.currentView === 'media' && viewName !== 'media' &&
+        typeof mediaPlayer !== 'undefined' && typeof mediaPlayer.stopPlayback === 'function') {
+      mediaPlayer.stopPlayback();
+    }
+
+    if (viewName !== this.currentView) {
+      this.previousView = this.currentView;
+    }
     this.currentView = viewName;
 
     // Update Nav Sidebar
