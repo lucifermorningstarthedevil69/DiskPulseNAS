@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
     "app_port": 8000,
     "app_host": "0.0.0.0",
     "theme": "dark",
+    "history_retention_days": 7,
 }
 
 

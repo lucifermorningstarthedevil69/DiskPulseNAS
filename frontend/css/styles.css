@@ -2412,6 +2412,73 @@ body {
   }
 }
 
+/* ==========================================================================
+   Transfer History
+   ========================================================================== */
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.history-table th {
+  background: rgba(15, 23, 42, 0.9);
+  padding: 12px 16px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: left;
+  border-bottom: 1px solid var(--border-glass);
+  font-weight: 600;
+}
+
+.history-table td {
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+
+.history-table tr {
+  transition: background 0.15s ease;
+}
+
+.history-table tr:hover {
+  background: var(--bg-card-hover);
+}
+
+.history-table tr:last-child td {
+  border-bottom: none;
+}
+
+@media (max-width: 768px) {
+  .history-table th,
+  .history-table td {
+    padding: 8px 10px;
+    font-size: 0.75rem;
+  }
+
+  .history-table th:nth-child(4),
+  .history-table td:nth-child(4),
+  .history-table th:nth-child(7),
+  .history-table td:nth-child(7) {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .history-table th,
+  .history-table td {
+    padding: 6px 8px;
+    font-size: 0.72rem;
+  }
+
+  .history-table th:nth-child(6),
+  .history-table td:nth-child(6) {
+    display: none;
+  }
+}
+
 /* Extra-small phones */
 @media (max-width: 480px) {
   .topbar {

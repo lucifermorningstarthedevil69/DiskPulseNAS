@@ -16,6 +16,10 @@ from backend.config import STORAGE_ROOT, FRONTEND_DIR, TELEMETRY_INTERVAL_SECS, 
 from backend.telemetry import telemetry_engine
 from backend.file_manager import file_manager
 from backend.download_engine import download_manager
+from backend.history_service import (
+    load_history, clear_history, get_retention_days, set_retention_days,
+    record_download, record_upload,
+)
 from backend.terminal_emulator import get_or_create_session, sessions
 from backend.nas_generator import nas_generator
 from backend.setup_manager import (
@@ -367,6 +371,21 @@ async def upload_files(
         file_path.write_bytes(contents)
         uploaded_files.append(file_manager._get_file_info(file_path))
 
+    # Record upload history (best-effort, never fails the upload response)
+    try:
+        for uf in uploaded_files:
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, record_upload,
+                uf.get("name", ""),
+                uf.get("size", 0),
+                "completed",
+                str(Path(uf.get("path", "")).parent).replace("\\", "/"),
+                "browser",
+                0.0,
+            )
+    except Exception:
+        pass
+
     return {
         "success": True,
         "uploaded": uploaded_files,
@@ -458,6 +477,31 @@ async def retry_download(task_id: str):
 async def delete_download(task_id: str, delete_file: bool = False):
     success = download_manager.delete_task(task_id, delete_file)
     return {"success": success}
+
+# ----------------- Transfer History Routes -----------------
+
+@app.get("/api/history")
+async def get_history():
+    """Return transfer history entries, newest first."""
+    history = load_history()
+    return {"history": list(reversed(history))}
+
+@app.delete("/api/history")
+async def delete_history():
+    """Clear all transfer history."""
+    clear_history()
+    return {"success": True}
+
+@app.get("/api/history/settings")
+async def get_history_settings():
+    """Return current retention setting."""
+    return {"retention_days": get_retention_days()}
+
+@app.post("/api/history/settings")
+async def post_history_settings(retention_days: int = 7):
+    """Update retention window (in days)."""
+    val = set_retention_days(retention_days)
+    return {"retention_days": val}
 
 # ----------------- Web Media Player Routes -----------------
 # Plain HTML5 <video> can't switch embedded audio tracks or render embedded

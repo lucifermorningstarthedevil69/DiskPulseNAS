@@ -32,6 +32,7 @@ except ImportError:
     ARIA2_SECRET = ""
 
 from .aria2_client import Aria2Client, Aria2RpcError
+from .history_service import record_download
 
 try:
     import libtorrent as lt
@@ -590,6 +591,8 @@ class DownloadManager:
                     await self._download_http(task)
             except asyncio.CancelledError:
                 task.status = "cancelled"
+            finally:
+                self._record_history(task)
 
     # ------------------------------------------------------------ libtorrent
 
@@ -1249,6 +1252,29 @@ class DownloadManager:
     def libtorrent_available(self) -> bool:
         return lt is not None
 
+    def _record_history(self, task: DownloadTask) -> None:
+        """Best-effort append to transfer history. Never fails the download."""
+        try:
+            loop = asyncio.get_event_loop()
+            extra = {}
+            if task.url_kind == "youtube":
+                extra["quality_label"] = task.quality_label or ""
+                extra["backend"] = task.backend or ""
+            elif task.url_kind == "torrent":
+                extra["peers"] = task.peers
+                extra["seeds"] = task.seeds
+                extra["file_count"] = len(task.files)
+            loop.run_in_executor(None, record_download,
+                task.task_id,
+                task.filename,
+                task.url,
+                task.total_bytes or task.downloaded_bytes,
+                task.status,
+                str(task.target_dir.relative_to(Path(STORAGE_ROOT))).replace("\\", "/"),
+                (task.completed_at or time.time()) - (task.started_at or task.created_at),
+                extra if extra else None,
+            )
+        except Exception:
+            pass
 
 download_manager = DownloadManager()
-

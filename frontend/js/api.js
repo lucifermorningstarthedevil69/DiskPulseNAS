@@ -285,6 +285,25 @@ class DiskPulseAPI {
     return this.request(`/api/downloads/${taskId}?delete_file=${deleteFile}`, { method: 'DELETE' });
   }
 
+  async getHistory() {
+    return this.request('/api/history');
+  }
+
+  async clearHistory() {
+    return this.request('/api/history', { method: 'DELETE' });
+  }
+
+  async getHistorySettings() {
+    return this.request('/api/history/settings');
+  }
+
+  async setHistorySettings(retentionDays) {
+    return this.request('/api/history/settings', {
+      method: 'POST',
+      body: JSON.stringify({ retention_days: retentionDays }),
+    });
+  }
+
   // Speed Test Endpoints
   async getSpeedTestLatest() {
     return this.request('/api/speedtest/latest');

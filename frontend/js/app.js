@@ -116,6 +116,8 @@ class DiskPulseApp {
       downloadManager.fetchTasks();
     } else if (viewName === 'media') {
       mediaPlayer.loadMediaLibrary();
+    } else if (viewName === 'history') {
+      historyController.refresh();
     }
 
     if (window.lucide) lucide.createIcons();
@@ -137,6 +139,8 @@ class DiskPulseApp {
         return '<i data-lucide="upload-cloud"></i> Multi-Device Storage Uploader';
       case 'deploy':
         return '<i data-lucide="server"></i> 1-Click NAS Standalone Deployer';
+      case 'history':
+        return '<i data-lucide="clock"></i> Transfer History';
       default:
         return '<i data-lucide="hard-drive"></i> DiskPulse NAS Hub';
     }
