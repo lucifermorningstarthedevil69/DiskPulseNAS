@@ -540,6 +540,7 @@ async def media_stream(
     audio: int = 0,            # type-relative audio track index to play
     t: float = 0.0,            # start offset in seconds (for seeking)
     vcodec: str = "",          # optional hint from /info to skip a re-probe
+    max_height: Optional[int] = None,  # optional playback quality cap (e.g. 1080)
 ):
     """Stream the file as fragmented MP4 with the chosen audio track.
 
@@ -562,7 +563,8 @@ async def media_stream(
         vcodec = ((probed.get("video") or {}).get("codec") or "") if probed.get("ok") else ""
 
     generator = stream_transcode(str(target), audio_rel_index=audio,
-                                 start_time=t, video_codec=vcodec)
+                                 start_time=t, video_codec=vcodec,
+                                 max_height=max_height)
     return StreamingResponse(generator, media_type="video/mp4",
                              headers={"Cache-Control": "no-store"})
 

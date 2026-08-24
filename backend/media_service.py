@@ -368,6 +368,7 @@ def build_transcode_cmd(
     audio_rel_index: int = 0,
     start_time: float = 0.0,
     video_codec: Optional[str] = None,
+    max_height: Optional[int] = None,
 ) -> List[str]:
     """Assemble the ffmpeg command that streams a fragmented MP4 to stdout.
 
@@ -378,29 +379,31 @@ def build_transcode_cmd(
     audio track is always re-encoded to stereo AAC so it plays regardless of the
     source codec (AC3/DTS/TrueHD/etc.). ``start_time`` uses fast input seeking so
     the transcoded stream stays seekable via re-requests.
+
+    When ``max_height`` is provided the video is scaled to that height (width
+    auto-calculated, rounded to an even number) so the player can offer YouTube-
+    style quality switching (360p … 4K).
     """
     vcodec = (video_codec or "").lower()
     seeking = bool(start_time and start_time > 0)
+    needs_reencode = vcodec not in ("h264", "avc1") or seeking or bool(max_height)
+
     cmd: List[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
     if seeking:
-        # Input-side seek. Combined with re-encoding (below), ffmpeg decodes from
-        # the prior keyframe and drops frames up to start_time, so the segment
-        # begins ~exactly at the requested time — the clock and subtitle offset
-        # stay aligned to within a frame.
         cmd += ["-ss", f"{start_time:.3f}"]
     cmd += ["-i", abs_path]
     cmd += ["-map", "0:v:0", "-map", f"0:a:{audio_rel_index}"]
 
-    # Copy H.264 only for linear playback from the very start (cheap remux, the
-    # common "just play this MKV" case). A copied stream can only begin on a
-    # keyframe and ffmpeg's copy seek-point isn't precisely predictable, so any
-    # seeked / resumed segment is re-encoded to land exactly on the requested
-    # time — otherwise the clock and subtitles would drift by up to one GOP.
-    if vcodec in ("h264", "avc1") and not seeking:
-        cmd += ["-c:v", "copy"]
-    else:
+    if needs_reencode:
+        vf_parts: List[str] = []
+        if max_height and max_height > 0:
+            vf_parts.append(f"scale=-2:{int(max_height)}")
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
                 "-pix_fmt", "yuv420p"]
+        if vf_parts:
+            cmd += ["-vf", ",".join(vf_parts)]
+    else:
+        cmd += ["-c:v", "copy"]
 
     cmd += [
         "-c:a", "aac", "-b:a", "192k", "-ac", "2",
@@ -488,6 +491,7 @@ async def stream_transcode(
     audio_rel_index: int = 0,
     start_time: float = 0.0,
     video_codec: Optional[str] = None,
+    max_height: Optional[int] = None,
     chunk_size: int = 256 * 1024,
 ) -> AsyncIterator[bytes]:
     """Yield fragmented-MP4 bytes from ffmpeg for StreamingResponse.
@@ -502,7 +506,7 @@ async def stream_transcode(
     ffmpeg") and made uvicorn's Ctrl+C shutdown time out. Every process is
     also registered so shutdown / file operations can kill it from outside.
     """
-    cmd = build_transcode_cmd(abs_path, audio_rel_index, start_time, video_codec)
+    cmd = build_transcode_cmd(abs_path, audio_rel_index, start_time, video_codec, max_height)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,

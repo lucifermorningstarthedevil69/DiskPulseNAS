@@ -201,11 +201,12 @@ class DiskPulseAPI {
     return this.request(`/api/media/info?path=${encodeURIComponent(path)}`);
   }
 
-  getMediaStreamUrl(path, audioIdx = 0, t = 0, vcodec = "") {
+  getMediaStreamUrl(path, audioIdx = 0, t = 0, vcodec = "", maxHeight = null) {
     const params = new URLSearchParams({
       path, audio: String(audioIdx), t: String(t || 0)
     });
     if (vcodec) params.set('vcodec', vcodec);
+    if (maxHeight) params.set('max_height', String(maxHeight));
     return `${this.baseUrl}/api/media/stream?${params.toString()}`;
   }
 

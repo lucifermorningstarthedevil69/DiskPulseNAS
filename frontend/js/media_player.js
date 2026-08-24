@@ -49,7 +49,18 @@ class WebMediaPlayer {
     this.subtitleOptions = [];
     this.ffmpegHintMsg = '';
     this._menuView = 'main';
-    this._lastSubValue = null;     // CC toggle restores the last picked track
+    this._lastSubValue = null;
+
+    this.qualityOptions = [
+      { label: 'Auto', value: null },
+      { label: '4K', value: 2160 },
+      { label: '2K', value: 1440 },
+      { label: '1080p', value: 1080 },
+      { label: '720p', value: 720 },
+      { label: '480p', value: 480 },
+      { label: '360p', value: 360 },
+    ];
+    this.currentQuality = null;
 
     // Overlay state
     this.HIDE_DELAY_MS = 2600;
@@ -178,6 +189,7 @@ class WebMediaPlayer {
     // Quick settings (right group)
     on('vp-btn-cc', 'click', () => this.toggleCc());
     on('vp-btn-speed', 'click', () => this.toggleSettings('speed'));
+    on('vp-btn-quality', 'click', () => this.toggleSettings('quality'));
     on('vp-btn-settings', 'click', () => this.toggleSettings('main'));
     on('vp-btn-fullscreen', 'click', () => this.toggleFullscreen());
 
@@ -189,6 +201,7 @@ class WebMediaPlayer {
       if (action === 'back') this.openSettings('main');
       else if (action === 'open') this.openSettings(value);
       else if (action === 'speed') this.setSpeed(parseFloat(value));
+      else if (action === 'quality') this.changeQuality(value === 'auto' ? null : parseInt(value, 10));
       else if (action === 'audio') this.changeAudioTrack(parseInt(value, 10) || 0);
       else if (action === 'sub') {
         this.changeSubtitle(value, btn.querySelector('span')?.textContent || '');
@@ -549,9 +562,10 @@ class WebMediaPlayer {
       }
 
       // Direct-play only when the container/codecs are browser-native AND we're
-      // on the default audio track; otherwise remux/transcode via ffmpeg.
-      const useStream = !info.direct_play;
-      this.loadVideoSource({ useStream, audioIdx: this.currentAudioIdx, startTime, autoplay: true });
+      // on the default audio track AND no specific quality is requested;
+      // otherwise remux/transcode via ffmpeg.
+      const useStream = !info.direct_play || this.currentQuality !== null;
+      this.loadVideoSource({ useStream, audioIdx: this.currentAudioIdx, startTime, autoplay: true, maxHeight: this.currentQuality });
     } else {
       // ffprobe unavailable or failed → best-effort direct playback.
       this.startNativeFallback(url);
@@ -582,7 +596,7 @@ class WebMediaPlayer {
    *   - raw/direct: the file always starts at 0, so we restore the position by
    *     setting `currentTime` once metadata is ready.
    */
-  loadVideoSource({ useStream, audioIdx = 0, startTime = 0, autoplay = true } = {}) {
+  loadVideoSource({ useStream, audioIdx = 0, startTime = 0, autoplay = true, maxHeight = null } = {}) {
     const vcodec = (this.mediaInfo && this.mediaInfo.video && this.mediaInfo.video.codec) || '';
     this.isTranscoded = !!useStream;
     const start = startTime > 0 ? startTime : 0;
@@ -599,7 +613,7 @@ class WebMediaPlayer {
     if (useStream) {
       this.baseTime = start;
       restoreTo = 0;  // -ss already positioned the segment
-      src = api.getMediaStreamUrl(this.videoRelPath, audioIdx, start, vcodec);
+      src = api.getMediaStreamUrl(this.videoRelPath, audioIdx, start, vcodec, maxHeight);
     } else {
       this.baseTime = 0;
       restoreTo = start;
@@ -760,6 +774,7 @@ class WebMediaPlayer {
         html += mainRow('volume-2', 'Audio track', audioLabel, 'audio');
       }
       html += mainRow('captions', 'Subtitles', subLabel, 'subs');
+      html += mainRow('gauge', 'Playback quality', this.qualityLabel(this.currentQuality), 'quality');
       html += '</div>';
       if (this.ffmpegHintMsg) {
         html += `<div class="vp-menu-note">${this.escHtml(this.ffmpegHintMsg)}</div>`;
@@ -769,6 +784,13 @@ class WebMediaPlayer {
       html += '<div class="vp-menu-body">';
       for (const s of this.SPEEDS) {
         html += row(this.speedLabel(s), Math.abs(this.playbackRate - s) < 0.001, 'speed', String(s));
+      }
+      html += '</div>';
+    } else if (view === 'quality') {
+      html += head('Playback quality', true);
+      html += '<div class="vp-menu-body">';
+      for (const q of this.qualityOptions) {
+        html += row(q.label, this.currentQuality === q.value, 'quality', String(q.value || 'auto'));
       }
       html += '</div>';
     } else if (view === 'audio') {
@@ -804,6 +826,12 @@ class WebMediaPlayer {
     return `${Number.isInteger(r) ? r.toFixed(1) : String(r)}x`;
   }
 
+  qualityLabel(height) {
+    if (height === null || height === undefined) return 'Auto';
+    const map = { 2160: '4K', 1440: '2K', 1080: '1080p', 720: '720p', 480: '480p', 360: '360p' };
+    return map[height] || `${height}p`;
+  }
+
   setSpeed(rate) {
     this.playbackRate = rate;
     this.applyPlaybackRate();
@@ -812,6 +840,29 @@ class WebMediaPlayer {
     const sel = document.getElementById('media-speed-select');
     if (sel) sel.value = String(rate);
     if (this.isMenuOpen()) this.renderSettingsMenu();
+  }
+
+  changeQuality(height) {
+    this.currentQuality = height;
+    this.updateQualityLabel();
+    if (this.isMenuOpen()) this.renderSettingsMenu();
+    if (this.activePlayer === 'video' && this.videoRelPath) {
+      const absPos = (this.baseTime || 0) + (this.videoEl.currentTime || 0);
+      this._pendingPlay = !this.videoEl.paused;
+      const useStream = !this.mediaInfo?.direct_play || height !== null;
+      this.loadVideoSource({
+        useStream,
+        audioIdx: this.currentAudioIdx,
+        startTime: absPos,
+        autoplay: true,
+        maxHeight: height,
+      });
+    }
+  }
+
+  updateQualityLabel() {
+    const label = document.getElementById('vp-quality-label');
+    if (label) label.textContent = this.qualityLabel(this.currentQuality);
   }
 
   changeAudioTrack(idx) {

@@ -1281,6 +1281,28 @@ body {
   .dl-media-body {
     flex-direction: column;
   }
+
+  .dl-card-thumb {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    max-height: 160px;
+  }
+
+  .dl-task-info {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .dl-task-info > div:last-child {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .dl-task-actions {
+    flex-wrap: wrap;
+  }
 }
 
 /* ==========================================================================
@@ -1540,6 +1562,15 @@ body {
   padding: 0 12px;
   border-radius: 16px;
   font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.vp-btn-quality {
+  width: auto;
+  padding: 0 10px;
+  border-radius: 16px;
+  font-size: 0.72rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -2318,6 +2349,31 @@ body {
     justify-content: flex-end;
   }
 
+  /* Download cards on tablet/mobile: tighten spacing and make action buttons
+     compact so the card stays readable without horizontal scrolling. */
+  .dl-task-card {
+    padding: 14px;
+  }
+  .dl-task-actions .btn-icon {
+    width: 32px;
+    height: 32px;
+  }
+  .dl-task-title {
+    gap: 6px;
+  }
+  .dl-task-title .nav-badge {
+    font-size: 0.65rem;
+    padding: 2px 6px;
+  }
+  .dl-task-info {
+    font-size: 0.75rem;
+  }
+  .dl-task-title > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   /* Terminal header: prompt on its own line with command chips wrapping
      beneath it instead of colliding on a single row. */
   .terminal-header {
@@ -2391,5 +2447,25 @@ body {
   #vp-btn-prev,
   #vp-btn-next {
     display: none;
+  }
+
+  /* Download cards on tiny phones: further compact the layout */
+  .dl-task-card {
+    padding: 12px;
+    gap: 8px;
+  }
+  .dl-task-actions .btn-icon {
+    width: 28px;
+    height: 28px;
+  }
+  .dl-card-thumb {
+    max-height: 120px;
+  }
+  .dl-task-info {
+    font-size: 0.72rem;
+  }
+  .dl-task-title .nav-badge {
+    font-size: 0.6rem;
+    padding: 1px 5px;
   }
 }
