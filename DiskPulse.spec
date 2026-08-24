@@ -73,6 +73,23 @@ hidden_imports = [
     'webview',
     'customtkinter',
     'darkdetect',
+    'anyio',
+    'anyio._backends',
+    'anyio._backends._asyncio',
+    'anyio._backends._trio',
+    'anyio._core',
+    'anyio._core._eventloop',
+    'anyio._core._fileio',
+    'anyio._core._sockets',
+    'anyio._core._streams',
+    'anyio._core._synchronization',
+    'anyio._core._tasks',
+    'anyio._core._testing',
+    'anyio._core._typedattr',
+    'anyio.abc',
+    'anyio.from_thread',
+    'anyio.to_thread',
+    'sniffio',
 ]
 
 a = Analysis(
@@ -81,7 +98,7 @@ a = Analysis(
     binaries=[],
     datas=datas,
     hiddenimports=hidden_imports,
-    hookspath=[],
+    hookspath=[str(BASE_DIR / 'hooks')],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
