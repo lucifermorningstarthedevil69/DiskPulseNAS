@@ -11,9 +11,11 @@ from pathlib import Path
 def _get_storage_root() -> str:
     try:
         import json
-        cfg_file = Path(__file__).parent / "diskpulse_config.json"
+        cfg_file = Path(__file__).parent / "data" / "diskpulse_config.json"
+        if not cfg_file.exists():
+            cfg_file = Path(__file__).parent / "diskpulse_config.json"
         if cfg_file.exists():
-            cfg = json.loads(cfg_file.read_text())
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
             if cfg.get("storage_root"):
                 return cfg["storage_root"]
     except Exception:
