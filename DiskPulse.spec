@@ -1,9 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
+import glob
 import os
 import sys
 from pathlib import Path
 
 BASE_DIR = Path.cwd()
+
+# ── Vendor binaries (ffmpeg, ffprobe, smartctl) ──────────────────────────────
+# Automatically bundle any .exe files found in vendor/ subdirectories so the
+# standalone executable ships with all required third-party tools.
+vendor_binaries = []
+vendor_dir = BASE_DIR / 'vendor'
+for exe_path in glob.glob(str(vendor_dir / 'ffmpeg' / '*.exe')):
+    vendor_binaries.append((exe_path, os.path.join('vendor', 'ffmpeg')))
+for exe_path in glob.glob(str(vendor_dir / 'smartmontools' / '*.exe')):
+    vendor_binaries.append((exe_path, os.path.join('vendor', 'smartmontools')))
+if vendor_binaries:
+    print(f'[Spec] Bundling {len(vendor_binaries)} vendor binary(ies): '
+          f'{", ".join(os.path.basename(p) for p, _ in vendor_binaries)}')
+else:
+    print('[Spec] WARNING: No vendor binaries found in vendor/. '
+          'ffmpeg/smartctl will NOT be embedded in the exe.')
 
 datas = [('frontend', 'frontend')]
 try:
@@ -30,6 +47,7 @@ hidden_imports = [
     'backend.aria2_client',
     'backend.icon_utils',
     'backend.server_runner',
+    'backend.embedded_tools',
     'generate_demo_data',
     'uvicorn',
     'uvicorn.logging',
@@ -95,7 +113,7 @@ hidden_imports = [
 a = Analysis(
     ['gui_launcher.py'],
     pathex=[],
-    binaries=[],
+    binaries=vendor_binaries,
     datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[str(BASE_DIR / 'hooks')],

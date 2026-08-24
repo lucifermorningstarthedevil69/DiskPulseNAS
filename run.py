@@ -6,6 +6,12 @@ import os
 import sys
 import uvicorn
 from pathlib import Path
+
+# Register bundled vendor binaries (ffmpeg, ffprobe, smartctl) on PATH
+# before any backend module checks for them via shutil.which().
+from backend.embedded_tools import setup_embedded_tools
+setup_embedded_tools()
+
 from backend.config import HOST, PORT, STORAGE_ROOT
 from backend.setup_manager import is_setup_complete
 

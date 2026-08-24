@@ -16,3 +16,7 @@ venv/
 # PyInstaller builds
 build/
 dist/
+
+# Vendor binaries (ffmpeg, smartctl) — downloaded per-builder, not committed
+vendor/ffmpeg/*.exe
+vendor/smartmontools/*.exe

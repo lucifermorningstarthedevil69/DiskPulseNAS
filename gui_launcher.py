@@ -44,6 +44,11 @@ if sys.stdin is None:
 # Ensure multiprocessing support for PyInstaller frozen executables
 multiprocessing.freeze_support()
 
+# Register bundled vendor binaries (ffmpeg, ffprobe, smartctl) on PATH
+# before any backend module checks for them via shutil.which().
+from backend.embedded_tools import setup_embedded_tools
+setup_embedded_tools()
+
 import backend.main
 from backend.config import HOST, PORT, STORAGE_ROOT, BASE_DIR
 from backend.icon_utils import create_diskpulse_icon
