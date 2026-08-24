@@ -18,9 +18,10 @@ import ssl
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, List
 
-from backend.setup_manager import BASE_DIR
+from backend.config import BASE_DIR, DATA_DIR
 
 # Cloudflare speed-test edge endpoints
 CF_HOST = "speed.cloudflare.com"
@@ -33,10 +34,10 @@ _HEADERS = {"User-Agent": USER_AGENT, "Connection": "keep-alive"}
 
 # Tuning constants
 _LATENCY_SAMPLES = 6          # the first probe on each connection is discarded
-_DOWNLOAD_WARMUP_BYTES = 5_000_000       # 5 MB probe to size the real run
-_DOWNLOAD_MAX_BYTES = 200_000_000        # cap a single download at 200 MB
-_DOWNLOAD_MIN_BYTES = 10_000_000         # never measure on less than 10 MB
-_DOWNLOAD_TARGET_SECS = 8.0              # aim for ~8 s of transfer
+_DOWNLOAD_WARMUP_BYTES = 2_500_000       # 2.5 MB probe
+_DOWNLOAD_MAX_BYTES = 100_000_000        # cap download payload at 100 MB
+_DOWNLOAD_MIN_BYTES = 5_000_000
+_DOWNLOAD_TARGET_SECS = 8.0
 _UPLOAD_WARMUP_BYTES = 2_000_000         # 2 MB probe
 _UPLOAD_MAX_BYTES = 30_000_000           # cap upload payload at 30 MB
 _UPLOAD_MIN_BYTES = 4_000_000
@@ -51,7 +52,28 @@ _SAMPLE_INTERVAL = 0.1
 #: Runs kept on disk for the history chart. Small enough to load and parse
 #: instantly on every page load.
 _HISTORY_LIMIT = 30
-HISTORY_FILE = BASE_DIR / "speedtest_history.json"
+HISTORY_FILE = DATA_DIR / "speedtest_history.json"
+
+
+def _resolve_history_file() -> Path:
+    """Return the history file path, preferring the storage pool location."""
+    default_path = DATA_DIR / "speedtest_history.json"
+    # Respect explicit overrides (e.g. tests that set HISTORY_FILE directly)
+    if HISTORY_FILE != default_path:
+        return HISTORY_FILE
+
+    # Check storage pool first
+    try:
+        from backend.config import _storage_pool_config
+        sp_config = _storage_pool_config()
+        if sp_config:
+            candidate = sp_config.parent / "speedtest_history.json"
+            if candidate.exists() or sp_config.parent.exists():
+                return candidate
+    except Exception:
+        pass
+
+    return HISTORY_FILE
 
 
 class SpeedTestError(Exception):
@@ -450,8 +472,18 @@ _PHASES = (
 
 def _load_history() -> List[Dict[str, Any]]:
     """Past runs, oldest first. A corrupt or missing file is simply no history."""
+    history_file = _resolve_history_file()
+    legacy_file = BASE_DIR / "speedtest_history.json"
+    if not history_file.exists() and legacy_file.exists():
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_file, history_file)
+        except Exception:
+            pass
+
+    target = history_file if history_file.exists() else legacy_file
     try:
-        raw = HISTORY_FILE.read_text(encoding="utf-8")
+        raw = target.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return []
     try:
@@ -478,7 +510,9 @@ def _append_history(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     history.append(entry)
     history = history[-_HISTORY_LIMIT:]
     try:
-        HISTORY_FILE.write_text(json.dumps(history, indent=2), encoding="utf-8")
+        history_file = _resolve_history_file()
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+        history_file.write_text(json.dumps(history, indent=2), encoding="utf-8")
     except OSError:
         pass
     return history

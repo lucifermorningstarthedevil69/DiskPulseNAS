@@ -101,6 +101,8 @@ class BackgroundServer:
             },
         }
 
+        from backend.main import app as fastapi_app
+
         config_kwargs = {
             "host": self.host,
             "port": self.port,
@@ -110,9 +112,9 @@ class BackgroundServer:
             "log_config": safe_log_config,
         }
         try:
-            config = uvicorn.Config("backend.main:app", timeout_graceful_shutdown=3, **config_kwargs)
+            config = uvicorn.Config(fastapi_app, timeout_graceful_shutdown=3, **config_kwargs)
         except TypeError:
-            config = uvicorn.Config("backend.main:app", **config_kwargs)
+            config = uvicorn.Config(fastapi_app, **config_kwargs)
 
         self.server = uvicorn.Server(config)
         self._is_running = True
@@ -121,7 +123,20 @@ class BackgroundServer:
             try:
                 self.server.run()
             except Exception as e:
-                print(f"[DiskPulse] Server error: {e}")
+                import traceback
+                err_text = f"[DiskPulse] Server error: {e}\n{traceback.format_exc()}"
+                try:
+                    from backend.config import BASE_DIR, _storage_pool_config
+                    log_path = BASE_DIR / "diskpulse_server_error.log"
+                    sp_config = _storage_pool_config()
+                    if sp_config:
+                        log_path = sp_config.parent / "diskpulse_server_error.log"
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(log_path, "a", encoding="utf-8") as err_f:
+                        err_f.write(err_text + "\n")
+                except Exception:
+                    pass
+                print(err_text)
             finally:
                 self._is_running = False
 

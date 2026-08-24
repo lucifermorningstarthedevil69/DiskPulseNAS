@@ -16,16 +16,124 @@ else:
     BUNDLE_DIR = Path(__file__).resolve().parent.parent
     BASE_DIR = BUNDLE_DIR
 
+# ── Data & Config Directory ───────────────────────────────────────────────────
+# Store json files for configuration and history in a dedicated data directory.
+# When running as a frozen EXE, DATA_DIR lives next to the executable so it
+# survives a moved/deleted EXE only if the user re-selects the storage pool.
+# To make the EXE fully portable, configs are ALSO written inside the storage
+# pool at STORAGE_ROOT/.diskpulse/, and a small pointer file records that path.
+DATA_DIR = Path(os.environ.get("DISKPULSE_DATA_DIR", str(BASE_DIR / "data")))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+CONFIG_FILE = DATA_DIR / "diskpulse_config.json"
+
+
+# ── Config Pointer (EXE portability) ─────────────────────────────────────────
+# A tiny text file in a fixed OS location that records where the real config
+# lives inside the storage pool. This lets a moved/re-downloaded EXE recover
+# the user's settings without re-running setup.
+
+def _get_config_pointer_path() -> Path:
+    if os.name == 'nt':
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            return Path(local_appdata) / "DiskPulse" / "config_path.txt"
+    elif os.name == 'posix':
+        config_home = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+        return Path(config_home) / "diskpulse" / "config_path.txt"
+    return DATA_DIR / "config_path.txt"
+
+
+def _read_config_pointer() -> Path | None:
+    pointer = _get_config_pointer_path()
+    if not pointer.exists():
+        return None
+    try:
+        text = pointer.read_text(encoding="utf-8").strip()
+        if text:
+            return Path(text)
+    except Exception:
+        pass
+    return None
+
+
+def _write_config_pointer(config_path: Path) -> None:
+    pointer = _get_config_pointer_path()
+    try:
+        pointer.parent.mkdir(parents=True, exist_ok=True)
+        pointer.write_text(str(config_path.resolve()), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _storage_pool_config() -> Path | None:
+    """Best-effort search for the config inside the storage pool."""
+    # 1. Pointer file
+    ptr = _read_config_pointer()
+    if ptr and ptr.exists():
+        return ptr
+
+    # 2. Env var
+    env_root = os.environ.get("DISKPULSE_STORAGE_ROOT")
+    if env_root:
+        candidate = Path(env_root) / ".diskpulse" / "diskpulse_config.json"
+        if candidate.exists():
+            return candidate
+
+    # 3. Default storage pool path (matches the wizard's suggested path)
+    candidate = BASE_DIR / "storage_pool" / ".diskpulse" / "diskpulse_config.json"
+    if candidate.exists():
+        return candidate
+
+    return None
+
+
 # ── Load persisted config (written by setup wizard) ────────────────────────────
 def _load_persisted() -> dict:
-    cfg_file = BASE_DIR / "diskpulse_config.json"
-    if cfg_file.exists():
+    # Primary: config inside the storage pool (survives EXE moves/deletes)
+    sp_config = _storage_pool_config()
+    if sp_config:
         try:
             import json
-            return json.loads(cfg_file.read_text(encoding="utf-8"))
+            return json.loads(sp_config.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Secondary: legacy DATA_DIR location
+    legacy_file = BASE_DIR / "diskpulse_config.json"
+    if not CONFIG_FILE.exists() and legacy_file.exists():
+        try:
+            import shutil
+            shutil.copy2(legacy_file, CONFIG_FILE)
+        except Exception:
+            pass
+
+    target = CONFIG_FILE if CONFIG_FILE.exists() else legacy_file
+    if target.exists():
+        try:
+            import json
+            return json.loads(target.read_text(encoding="utf-8"))
         except Exception:
             pass
     return {}
+
+
+def save_config(config: dict) -> None:
+    """Write config to disk atomically in the data directory and storage pool."""
+    # Always write to the legacy location so the current process can reload
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    # Also write inside the storage pool so the config survives EXE deletion
+    storage_root = config.get("storage_root")
+    if storage_root and config.get("setup_complete"):
+        try:
+            storage_dir = Path(storage_root) / ".diskpulse"
+            storage_dir.mkdir(parents=True, exist_ok=True)
+            storage_config = storage_dir / "diskpulse_config.json"
+            storage_config.write_text(json.dumps(config, indent=2), encoding="utf-8")
+            _write_config_pointer(storage_config)
+        except Exception:
+            pass
 
 _persisted = _load_persisted()
 

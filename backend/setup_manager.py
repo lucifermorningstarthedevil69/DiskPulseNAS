@@ -11,10 +11,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import psutil
-from backend.config import format_bytes, BASE_DIR
-
-# Config file stored beside executable / project root
-CONFIG_FILE = BASE_DIR / "diskpulse_config.json"
+from backend.config import format_bytes, BASE_DIR, DATA_DIR, CONFIG_FILE, _storage_pool_config, _read_config_pointer
 
 DEFAULT_CONFIG = {
     "setup_complete": False,
@@ -30,6 +27,16 @@ DEFAULT_CONFIG = {
 
 def load_config() -> Dict[str, Any]:
     """Load config from disk, merging with defaults for any missing keys."""
+    # Primary: config inside the storage pool (survives EXE moves/deletes)
+    sp_config = _storage_pool_config()
+    if sp_config:
+        try:
+            stored = json.loads(sp_config.read_text(encoding="utf-8"))
+            return {**DEFAULT_CONFIG, **stored}
+        except Exception:
+            pass
+
+    # Secondary: legacy DATA_DIR location
     if CONFIG_FILE.exists():
         try:
             stored = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
@@ -40,8 +47,9 @@ def load_config() -> Dict[str, Any]:
 
 
 def save_config(config: Dict[str, Any]) -> None:
-    """Write config to disk atomically."""
-    CONFIG_FILE.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    """Write config to disk in the data directory and storage pool."""
+    from backend.config import save_config as _save_config
+    _save_config(config)
 
 
 def is_setup_complete() -> bool:

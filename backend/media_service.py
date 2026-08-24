@@ -26,10 +26,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
+
+
+_CREATE_NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0
 
 
 # ---- capability detection -------------------------------------------------
@@ -95,7 +99,7 @@ def probe_media(abs_path: str) -> Dict[str, Any]:
         abs_path,
     ]
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60, creationflags=_CREATE_NO_WINDOW)
     except (subprocess.TimeoutExpired, OSError) as e:
         return {"ok": False, "error": f"ffprobe failed: {e}"}
     if out.returncode != 0:
@@ -217,7 +221,7 @@ def extract_subtitle_vtt(abs_path: str, rel_index: int) -> Optional[bytes]:
         "-f", "webvtt", "pipe:1",
     ]
     try:
-        out = subprocess.run(cmd, capture_output=True, timeout=120)
+        out = subprocess.run(cmd, capture_output=True, timeout=120, creationflags=_CREATE_NO_WINDOW)
     except (subprocess.TimeoutExpired, OSError):
         return None
     if out.returncode != 0 or not out.stdout:
@@ -243,7 +247,7 @@ def convert_external_sub_vtt(sub_abs_path: str) -> Optional[bytes]:
         "-f", "webvtt", "pipe:1",
     ]
     try:
-        out = subprocess.run(cmd, capture_output=True, timeout=120)
+        out = subprocess.run(cmd, capture_output=True, timeout=120, creationflags=_CREATE_NO_WINDOW)
     except (subprocess.TimeoutExpired, OSError):
         return None
     if out.returncode != 0 or not out.stdout:
@@ -349,7 +353,7 @@ def grab_thumbnail(abs_path: str, t: float, width: int = 200) -> Optional[bytes]
         "pipe:1",
     ]
     try:
-        out = subprocess.run(cmd, capture_output=True, timeout=30)
+        out = subprocess.run(cmd, capture_output=True, timeout=30, creationflags=_CREATE_NO_WINDOW)
     except (subprocess.TimeoutExpired, OSError):
         return None
     if out.returncode != 0 or not out.stdout:
@@ -503,6 +507,7 @@ async def stream_transcode(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        creationflags=_CREATE_NO_WINDOW,
     )
     _register_proc(proc, abs_path)
     try:
