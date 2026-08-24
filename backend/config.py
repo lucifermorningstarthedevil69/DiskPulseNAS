@@ -24,7 +24,6 @@ else:
 # To make the EXE fully portable, configs are ALSO written inside the storage
 # pool at STORAGE_ROOT/.diskpulse/, and a small pointer file records that path.
 DATA_DIR = Path(os.environ.get("DISKPULSE_DATA_DIR", str(BASE_DIR / "data")))
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = DATA_DIR / "diskpulse_config.json"
 
 
@@ -274,7 +273,3 @@ def format_uptime(seconds) -> str:
     if days:
         return f"{days}d {hours}h {minutes:02d}m"
     return f"{hours}h {minutes:02d}m"
-
-
-# Ensure the storage directory exists
-Path(STORAGE_ROOT).mkdir(parents=True, exist_ok=True)
