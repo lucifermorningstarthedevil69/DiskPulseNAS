@@ -86,7 +86,7 @@ def ensure_ffmpeg():
     ffprobe_exe = vendor_ffmpeg / "ffprobe.exe"
 
     if ffmpeg_exe.exists() and ffprobe_exe.exists():
-        print("[Vendor] ffmpeg.exe and ffprobe.exe already present ✓")
+        print("[Vendor] ffmpeg.exe and ffprobe.exe already present [OK]")
         return
 
     data = _download(FFMPEG_ZIP_URL, "FFmpeg essentials")
@@ -100,12 +100,12 @@ def ensure_ffmpeg():
                 with zf.open(member) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
                 extracted[basename] = True
-                print(f"         → {target}")
+                print(f"         -> {target}")
         missing = [k for k, v in extracted.items() if not v]
         if missing:
             print(f"[Vendor] WARNING: Could not find {missing} in the zip archive!")
         else:
-            print("[Vendor] FFmpeg extracted successfully ✓")
+            print("[Vendor] FFmpeg extracted successfully [OK]")
 
 
 def ensure_smartctl():
@@ -120,13 +120,13 @@ def ensure_smartctl():
 
     smartctl_exe = vendor_smart / "smartctl.exe"
     if smartctl_exe.exists():
-        print("[Vendor] smartctl.exe already present ✓")
+        print("[Vendor] smartctl.exe already present [OK]")
         return
 
     # smartmontools doesn't publish a standalone zip for Windows, so we guide the
     # user to place it manually. The installer is an NSIS exe, not a zip, so we
     # can't easily auto-extract.
-    print("[Vendor] ─────────────────────────────────────────────────────────")
+    print("[Vendor] ---------------------------------------------------------")
     print("[Vendor] smartctl.exe not found in vendor/smartmontools/")
     print("[Vendor]")
     print("[Vendor] To embed smartmontools in the build:")
@@ -147,7 +147,7 @@ def ensure_smartctl():
         if os.path.exists(system_smartctl):
             print(f"[Vendor] Found system install: {system_smartctl}")
             shutil.copy2(system_smartctl, smartctl_exe)
-            print(f"[Vendor] Copied to {smartctl_exe} ✓")
+            print(f"[Vendor] Copied to {smartctl_exe} [OK]")
             return
 
     # Also check PATH
@@ -155,12 +155,12 @@ def ensure_smartctl():
     if which_smartctl:
         print(f"[Vendor] Found on PATH: {which_smartctl}")
         shutil.copy2(which_smartctl, smartctl_exe)
-        print(f"[Vendor] Copied to {smartctl_exe} ✓")
+        print(f"[Vendor] Copied to {smartctl_exe} [OK]")
         return
 
     print("[Vendor] Could not find smartctl on this system.")
     print("[Vendor] The build will proceed WITHOUT smartctl embedded.")
-    print("[Vendor] ─────────────────────────────────────────────────────────")
+    print("[Vendor] ---------------------------------------------------------")
 
 
 def ensure_vendor_binaries():
