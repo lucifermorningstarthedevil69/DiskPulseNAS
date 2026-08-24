@@ -55,10 +55,60 @@ _DIRECT_FILE_EXTS = (
     ".pdf", ".epub", ".mobi", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
 )
 
+# Cloud storage & direct file hosts that should always take the direct HTTP downloader
+_DIRECT_STORAGE_HOSTS = {
+    "drive.usercontent.google.com",
+    "drive.google.com",
+    "docs.google.com",
+    "mega.nz",
+    "mega.io",
+    "dropbox.com",
+    "www.dropbox.com",
+    "dl.dropboxusercontent.com",
+    "mediafire.com",
+    "www.mediafire.com",
+    "1fichier.com",
+    "pixeldrain.com",
+    "gofile.io",
+    "github.com",
+    "raw.githubusercontent.com",
+    "gitlab.com",
+    "sourceforge.net",
+    "archive.org",
+}
+
 # Cached list of yt-dlp extractor classes (minus the catch-all "generic" one),
 # loaded once on first use. yt-dlp ships ~1,800 site extractors and matches URLs
 # purely by regex, so this needs no network access.
 _YTDLP_IES = None
+
+
+def normalize_cloud_url(url: str) -> str:
+    """Normalize Google Drive and other cloud URLs into direct download streams."""
+    clean = url.strip()
+    low = clean.lower()
+
+    if "drive.google.com" in low or "drive.usercontent.google.com" in low or "docs.google.com" in low:
+        file_id = None
+        # /file/d/<id>
+        m = re.search(r"/file/d/([a-zA-Z0-9_-]+)", clean)
+        if m:
+            file_id = m.group(1)
+        # id=<id>
+        if not file_id:
+            m = re.search(r"[?&]id=([a-zA-Z0-9_-]+)", clean)
+            if m:
+                file_id = m.group(1)
+        # /d/<id>
+        if not file_id:
+            m = re.search(r"/d/([a-zA-Z0-9_-]+)", clean)
+            if m:
+                file_id = m.group(1)
+
+        if file_id:
+            return f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
+
+    return clean
 
 
 def _ytdlp_extractor_classes():
@@ -109,9 +159,19 @@ def classify_url(url: str) -> str:
         return "http"
 
     try:
-        host = urllib.parse.urlparse(clean_url).netloc.lower()
+        parsed = urllib.parse.urlparse(clean_url)
+        host = parsed.netloc.lower()
+        query = parsed.query.lower()
     except Exception:
         host = ""
+        query = ""
+
+    # Direct cloud/storage hosts or download triggers always take the direct HTTP path.
+    if host and any(host == h or host.endswith("." + h) for h in _DIRECT_STORAGE_HOSTS):
+        return "http"
+
+    if "export=download" in query or "confirm=t" in query:
+        return "http"
 
     # Fast path / offline fallback: the curated host list short-circuits without
     # loading yt-dlp's extractor table.
@@ -864,6 +924,17 @@ class DownloadManager:
         except Exception as e:
             if task._cancel_flag:
                 task.status = "cancelled"
+            elif task.backend_requested == "auto":
+                # Seamless fallback to direct HTTP downloader for Google Drive files, zips, ISOs, etc.
+                try:
+                    task.backend = "aiohttp"
+                    task.error_message = ""
+                    await self._download_http(task)
+                    return
+                except Exception:
+                    task.status = "error"
+                    task.error_message = friendly_error(e)
+                    task.speed_bytes_sec = 0.0
             else:
                 task.status = "error"
                 task.error_message = friendly_error(e)
@@ -935,8 +1006,11 @@ class DownloadManager:
     # -------------------------------------------------------- aiohttp
 
     async def _download_http(self, task: DownloadTask):
-        """Direct async HTTP downloader (resumable, multi-chunk, no external binary required)."""
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DiskPulse-NAS-Downloader/1.0"}
+        """Direct async HTTP downloader (resumable, multi-chunk, Google Drive bypass, no external binary required)."""
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+
+        # Normalize cloud URLs (Google Drive / Docs)
+        download_url = normalize_cloud_url(task.url)
 
         file_mode = "wb"
         resume_offset = 0
@@ -948,9 +1022,9 @@ class DownloadManager:
                 task.downloaded_bytes = resume_offset
 
         try:
-            timeout = aiohttp.ClientTimeout(total=None, connect=15, sock_read=30)
+            timeout = aiohttp.ClientTimeout(total=None, connect=20, sock_read=45)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(task.url, headers=headers, allow_redirects=True) as resp:
+                async with session.get(download_url, headers=headers, allow_redirects=True) as resp:
                     if resp.status not in (200, 206):
                         if resp.status == 416:
                             file_mode = "wb"
@@ -961,65 +1035,29 @@ class DownloadManager:
                             task.error_message = f"HTTP {resp.status} {resp.reason}"
                             return
 
-                    # Parse Content-Disposition header
-                    cd = resp.headers.get("Content-Disposition", "")
-                    parsed_name = parse_content_disposition_filename(cd)
-                    if parsed_name:
-                        task.filename = parsed_name
-                        task.target_filepath = task.target_dir / parsed_name
-                    elif task.filename.startswith("download_") and resp.url:
-                        # Extract from final redirected URL path
-                        final_path = urllib.parse.unquote(resp.url.path)
-                        final_base = os.path.basename(final_path)
-                        if final_base and "." in final_base:
-                            task.filename = final_base
-                            task.target_filepath = task.target_dir / final_base
+                    # Handle Google Drive virus scan warning page
+                    content_type = resp.headers.get("Content-Type", "").lower()
+                    if "text/html" in content_type and ("google.com" in str(resp.url) or "googleusercontent.com" in str(resp.url)):
+                        body_text = await resp.text()
+                        if "download-form" in body_text or "uc-download-link" in body_text or "virus" in body_text.lower():
+                            action_match = re.search(r'<form[^>]*id=["\']download-form["\'][^>]*action=["\']([^"\']+)["\']', body_text)
+                            action_url = action_match.group(1) if action_match else "https://drive.usercontent.google.com/download"
+                            params = {}
+                            for input_match in re.finditer(r'<input[^>]*type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']*)["\']', body_text):
+                                params[input_match.group(1)] = input_match.group(2)
+                            if not params:
+                                link_match = re.search(r'href=["\'](/uc\?[^"\']+)["\']', body_text)
+                                if link_match:
+                                    action_url = urllib.parse.urljoin("https://drive.google.com", link_match.group(1))
 
-                    # Now that the real filename (hence extension) is known,
-                    # re-file into the correct type folder — but only for a
-                    # fresh download, so an in-progress resume keeps its path.
-                    if task.sort_by_type and resume_offset == 0:
-                        new_dir = task._resolve_target_dir()
-                        if new_dir != task.target_dir:
-                            task.target_dir = new_dir
-                            task.target_filepath = new_dir / task.filename
+                            if params:
+                                query_str = urllib.parse.urlencode(params)
+                                action_url = f"{action_url}?{query_str}"
 
-                    content_length = resp.headers.get("Content-Length")
-                    if content_length:
-                        task.total_bytes = int(content_length) + resume_offset
+                            async with session.get(action_url, headers=headers, allow_redirects=True) as confirmed_resp:
+                                return await self._stream_http_chunks(task, confirmed_resp, file_mode, resume_offset)
 
-                    last_speed_calc_time = time.time()
-                    last_downloaded = task.downloaded_bytes
-
-                    async with aiofiles.open(task.target_filepath, file_mode) as f:
-                        async for chunk in resp.content.iter_chunked(64 * 1024):
-                            if task._cancel_flag:
-                                task.status = "cancelled"
-                                return
-
-                            await task._pause_event.wait()
-
-                            await f.write(chunk)
-                            task.downloaded_bytes += len(chunk)
-
-                            now = time.time()
-                            elapsed = now - last_speed_calc_time
-                            if elapsed >= 0.5:
-                                bytes_diff = task.downloaded_bytes - last_downloaded
-                                task.speed_bytes_sec = bytes_diff / elapsed
-                                last_speed_calc_time = now
-                                last_downloaded = task.downloaded_bytes
-
-                                if task.total_bytes > 0:
-                                    task.progress_percent = min(100.0, (task.downloaded_bytes / task.total_bytes) * 100.0)
-                                    remaining = task.total_bytes - task.downloaded_bytes
-                                    if task.speed_bytes_sec > 0:
-                                        task.eta_seconds = remaining / task.speed_bytes_sec
-
-                    task.status = "completed"
-                    task.progress_percent = 100.0
-                    task.speed_bytes_sec = 0.0
-                    task.completed_at = time.time()
+                    await self._stream_http_chunks(task, resp, file_mode, resume_offset)
 
         except asyncio.CancelledError:
             task.status = "cancelled"
@@ -1027,6 +1065,63 @@ class DownloadManager:
             task.status = "error"
             task.error_message = str(e)
             task.speed_bytes_sec = 0.0
+
+    async def _stream_http_chunks(self, task: DownloadTask, resp: aiohttp.ClientResponse, file_mode: str, resume_offset: int):
+        """Stream HTTP response chunks to target file with live speed & ETA."""
+        cd = resp.headers.get("Content-Disposition", "")
+        parsed_name = parse_content_disposition_filename(cd)
+        if parsed_name:
+            task.filename = parsed_name
+            task.target_filepath = task.target_dir / parsed_name
+        elif task.filename.startswith("download_") and resp.url:
+            final_path = urllib.parse.unquote(resp.url.path)
+            final_base = os.path.basename(final_path)
+            if final_base and "." in final_base:
+                task.filename = final_base
+                task.target_filepath = task.target_dir / final_base
+
+        if task.sort_by_type and resume_offset == 0:
+            new_dir = task._resolve_target_dir()
+            if new_dir != task.target_dir:
+                task.target_dir = new_dir
+                task.target_filepath = new_dir / task.filename
+
+        content_length = resp.headers.get("Content-Length")
+        if content_length:
+            task.total_bytes = int(content_length) + resume_offset
+
+        last_speed_calc_time = time.time()
+        last_downloaded = task.downloaded_bytes
+
+        async with aiofiles.open(task.target_filepath, file_mode) as f:
+            async for chunk in resp.content.iter_chunked(64 * 1024):
+                if task._cancel_flag:
+                    task.status = "cancelled"
+                    return
+
+                await task._pause_event.wait()
+
+                await f.write(chunk)
+                task.downloaded_bytes += len(chunk)
+
+                now = time.time()
+                elapsed = now - last_speed_calc_time
+                if elapsed >= 0.5:
+                    bytes_diff = task.downloaded_bytes - last_downloaded
+                    task.speed_bytes_sec = bytes_diff / elapsed
+                    last_speed_calc_time = now
+                    last_downloaded = task.downloaded_bytes
+
+                    if task.total_bytes > 0:
+                        task.progress_percent = min(100.0, (task.downloaded_bytes / task.total_bytes) * 100.0)
+                        remaining = task.total_bytes - task.downloaded_bytes
+                        if task.speed_bytes_sec > 0:
+                            task.eta_seconds = remaining / task.speed_bytes_sec
+
+        task.status = "completed"
+        task.progress_percent = 100.0
+        task.speed_bytes_sec = 0.0
+        task.completed_at = time.time()
 
     # --------------------------------------------------------- controls
 

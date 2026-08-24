@@ -242,7 +242,7 @@ class DownloadManagerView {
     const sortByType = document.getElementById('modal-dl-sort-type')?.checked !== false;
 
     try {
-      await api.addDownload(url, category === 'downloads' ? null : category, customDir, null, { sortByType });
+      await api.addDownload(url, category === 'downloads' ? null : category, customDir, null, { sortByType, backend: 'aiohttp' });
       this.afterAdd();
     } catch (err) {
       alert(err.message);

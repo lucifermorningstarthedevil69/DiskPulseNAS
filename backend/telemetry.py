@@ -1,10 +1,45 @@
 import time
 import os
+import socket
 import platform
 import psutil
 from pathlib import Path
-from backend.config import STORAGE_ROOT, format_bytes, format_uptime
+from backend.config import STORAGE_ROOT, PORT, format_bytes, format_uptime
 from backend.drive_health import get_drive_health
+
+
+def get_primary_local_ip() -> str:
+    """Find the host's actual LAN IP on 192.168.x.x / 10.x.x.x / 172.16-31.x.x."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.2)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+
+    try:
+        addrs = psutil.net_if_addrs()
+        for iface, if_addrs in addrs.items():
+            for addr in if_addrs:
+                if addr.family == socket.AF_INET and not addr.address.startswith("127."):
+                    if addr.address.startswith(("192.168.", "10.", "172.")):
+                        return addr.address
+    except Exception:
+        pass
+
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+
+    return "127.0.0.1"
+
 
 class TelemetryEngine:
     def __init__(self):
@@ -12,6 +47,15 @@ class TelemetryEngine:
         self.last_net_io = psutil.net_io_counters()
         self.last_time = time.time()
         self.boot_time = psutil.boot_time()
+        self._cached_ip = None
+        self._last_ip_check = 0
+
+    def get_local_ip(self) -> str:
+        now = time.time()
+        if self._cached_ip is None or (now - self._last_ip_check) > 30:
+            self._cached_ip = get_primary_local_ip()
+            self._last_ip_check = now
+        return self._cached_ip
 
     def get_system_overview(self):
         current_time = time.time()
@@ -84,6 +128,7 @@ class TelemetryEngine:
 
         # System info
         uptime_seconds = int(time.time() - self.boot_time)
+        local_ip = self.get_local_ip()
 
         return {
             "timestamp": current_time,
@@ -94,6 +139,9 @@ class TelemetryEngine:
                 "python_version": platform.python_version(),
                 "uptime_seconds": uptime_seconds,
                 "uptime_human": format_uptime(uptime_seconds),
+                "local_ip": local_ip,
+                "local_port": PORT,
+                "local_url": f"http://{local_ip}:{PORT}",
             },
             "cpu": {
                 "percent_total": cpu_percent,

@@ -228,20 +228,50 @@ class DashboardVisualizer {
     });
 
     api.on('telemetry:data', (data) => this.renderTelemetry(data));
+
+    // Topbar LAN IP Badge click to copy
+    const lanBadge = document.getElementById('topbar-lan-badge');
+    if (lanBadge) {
+      lanBadge.addEventListener('click', async () => {
+        const url = window.DISKPULSE_LAN_URL || (document.getElementById('topbar-lan-ip')?.textContent ? `http://${document.getElementById('topbar-lan-ip').textContent}` : window.location.origin);
+        try {
+          await navigator.clipboard.writeText(url);
+          const icon = document.getElementById('topbar-lan-copy-icon');
+          if (icon) {
+            icon.setAttribute('data-lucide', 'check');
+            if (window.lucide) lucide.createIcons();
+            setTimeout(() => {
+              icon.setAttribute('data-lucide', 'copy');
+              if (window.lucide) lucide.createIcons();
+            }, 2000);
+          }
+        } catch (e) {
+          prompt('Copy LAN URL:', url);
+        }
+      });
+    }
   }
 
   renderTelemetry(data) {
     if (!data) return;
 
-    // 1. Header & Host Info
+    // 1. Header & Host Info + LAN IP
     const hostEl = document.getElementById('sidebar-hostname');
     const uptimeEl = document.getElementById('sidebar-uptime');
     if (hostEl && data.system) hostEl.textContent = data.system.hostname;
     if (uptimeEl && data.system) {
-      // Prefer the raw seconds so the format lives in one place; uptime_human is
-      // the backend's own h:m rendering and only matters if seconds are missing.
       const secs = data.system.uptime_seconds;
       uptimeEl.textContent = `Up: ${secs != null ? formatUptime(secs) : (data.system.uptime_human || '--')}`;
+    }
+
+    if (data.system && data.system.local_ip) {
+      window.DISKPULSE_LAN_URL = data.system.local_url || `http://${data.system.local_ip}:${data.system.local_port || 8000}`;
+      const lanBadge = document.getElementById('topbar-lan-badge');
+      const lanText = document.getElementById('topbar-lan-ip');
+      if (lanBadge && lanText) {
+        lanText.textContent = `${data.system.local_ip}:${data.system.local_port || 8000}`;
+        lanBadge.style.display = 'inline-flex';
+      }
     }
 
     // 2. Storage Pool Overview
@@ -290,6 +320,12 @@ class DashboardVisualizer {
       document.getElementById('dash-disk-read').textContent = diskIo.read_human_sec;
       document.getElementById('dash-disk-write').textContent = diskIo.write_human_sec;
       document.getElementById('dash-disk-rw').textContent = `${(readMb + writeMb).toFixed(1)} MB/s`;
+      const rwBar = document.getElementById('dash-disk-rw-bar');
+      if (rwBar) {
+        // Cap visual scale at 100 MB/s for the mini gauge
+        const rwPct = Math.min(100, ((readMb + writeMb) / 100) * 100);
+        rwBar.style.width = `${Math.max(rwPct > 0 ? 3 : 0, rwPct)}%`;
+      }
 
       // Push into Rolling Chart
       if (this.chartDiskIO) {

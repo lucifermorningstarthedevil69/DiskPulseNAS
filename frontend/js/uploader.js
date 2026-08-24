@@ -679,7 +679,14 @@ class MultiDeviceUploader {
     if (!qrContainer) return;
 
     qrContainer.innerHTML = '';
-    const url = window.location.href;
+
+    // Prefer the real LAN IP address so smartphones on local Wi-Fi can connect
+    let url = window.DISKPULSE_LAN_URL ? `${window.DISKPULSE_LAN_URL}/#uploader` : window.location.href;
+    const topbarIp = document.getElementById('topbar-lan-ip')?.textContent?.trim();
+    if (topbarIp && topbarIp !== '--' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+      url = `http://${topbarIp}/#uploader`;
+    }
+
     if (urlText) urlText.textContent = url;
 
     if (window.QRCode) {

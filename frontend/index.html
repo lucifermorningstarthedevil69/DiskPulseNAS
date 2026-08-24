@@ -117,6 +117,11 @@
         </div>
 
         <div class="topbar-right">
+          <button class="btn btn-secondary lan-ip-badge" id="topbar-lan-badge" title="Click to copy Web UI LAN network URL" style="display: none; align-items: center; gap: 6px; font-size: 0.78rem; padding: 5px 12px; border-radius: var(--radius-full); background: rgba(0, 242, 254, 0.08); border: 1px solid rgba(0, 242, 254, 0.25); color: var(--accent-cyan); cursor: pointer;">
+            <i data-lucide="wifi" style="width: 13px; height: 13px;"></i>
+            <span id="topbar-lan-ip">--</span>
+            <i data-lucide="copy" id="topbar-lan-copy-icon" style="width: 12px; height: 12px; opacity: 0.7;"></i>
+          </button>
           <div class="live-pill">
             <span class="status-dot"></span>
             <span id="live-telemetry-status">STREAMING LIVE</span>
@@ -174,6 +179,9 @@
                 <span style="color: var(--accent-emerald);"><i data-lucide="arrow-up"
                     style="width: 12px; height: 12px; display:inline;"></i> Write: <span id="dash-disk-write">0
                     B/s</span></span>
+              </div>
+              <div class="progress-mini" style="margin-top: 14px; height: 6px; display: flex; gap: 2px;">
+                <div class="progress-mini-bar" id="dash-disk-rw-bar" style="width: 0%; background: var(--grad-emerald);"></div>
               </div>
             </div>
 
