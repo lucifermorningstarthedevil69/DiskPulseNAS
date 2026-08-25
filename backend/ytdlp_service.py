@@ -600,14 +600,9 @@ def probe_formats(url: str) -> Dict[str, Any]:
         if not height:
             continue
         progressive = f.get("acodec") not in (None, "none")
-        # Without ffmpeg only progressive streams are usable.
-        if not ffmpeg and not progressive:
-            continue
-
         size = _size_of(f) or 0
         total = size if progressive else (size + best_audio_size)
         existing = by_height.get(int(height))
-        # Prefer mp4, then the entry we can size most confidently.
         better = (
             existing is None
             or (f.get("ext") == "mp4" and existing.get("ext") != "mp4")
@@ -622,6 +617,7 @@ def probe_formats(url: str) -> Dict[str, Any]:
                 "fps": f.get("fps"),
                 "vcodec": (f.get("vcodec") or "").split(".")[0],
                 "progressive": progressive,
+                "requires_ffmpeg": not progressive and ffmpeg,
                 "size_bytes": total or None,
                 "size_human": _fmt_size(total),
             }
@@ -668,8 +664,8 @@ def probe_formats(url: str) -> Dict[str, Any]:
         "cookie_browser": detect_cookie_browser(),
         "max_progressive_note": (
             "" if ffmpeg else
-            "ffmpeg not found — only pre-muxed streams (max 720p) are listed, and "
-            "MP3 conversion is unavailable. Install ffmpeg to unlock 1080p+ and audio extraction."
+            "ffmpeg not found — DASH streams (1080p+) need muxing and will fall back "
+            "to the best progressive stream. Install ffmpeg for exact quality."
         ),
     }
 

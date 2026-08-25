@@ -361,6 +361,19 @@ class DownloadManagerView {
     }
 
     this.updateFfmpegWarning(data);
+
+    // Show probe-level note when ffmpeg is missing (e.g. DASH streams need muxing).
+    const note = data.max_progressive_note || '';
+    if (note) {
+      const noteEl = document.getElementById('modal-dl-probe-note');
+      if (noteEl) {
+        noteEl.textContent = note;
+        noteEl.style.display = 'block';
+      }
+    } else {
+      const noteEl = document.getElementById('modal-dl-probe-note');
+      if (noteEl) noteEl.style.display = 'none';
+    }
   }
 
   updateFfmpegWarning(data) {

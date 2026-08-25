@@ -65,6 +65,7 @@ class TelemetryEngine:
             setup_embedded_tools()
             lhm_exe = shutil.which("LibreHardwareMonitor.exe")
             if not lhm_exe:
+                print("[LHM] LibreHardwareMonitor.exe not found on PATH; CPU temp will be N/A")
                 return
             # Launch hidden/minimized so it registers WMI without popping a window.
             startupinfo = subprocess.STARTUPINFO()
@@ -77,7 +78,9 @@ class TelemetryEngine:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except Exception:
+            print(f"[LHM] Launched LibreHardwareMonitor.exe (PID {self._lhm_process.pid})")
+        except Exception as e:
+            print(f"[LHM] Failed to launch: {e}")
             self._lhm_process = None
 
     def cleanup(self) -> None:
@@ -348,19 +351,21 @@ class TelemetryEngine:
             try:
                 import wmi  # type: ignore
                 for ns in ("root\\LibreHardwareMonitor", "root\\OpenHardwareMonitor"):
-                    try:
-                        w = wmi.WMI(namespace=ns)
-                        for sensor in w.WmiMonitorBrightness():
-                            pass
-                        for sensor in w.Sensor():
-                            name = getattr(sensor, "Name", "")
-                            stype = getattr(sensor, "SensorType", "")
-                            if "temperature" in str(stype).lower() and "cpu" in str(name).lower():
-                                val = getattr(sensor, "Value", None)
-                                if val is not None:
-                                    return float(val), ""
-                    except Exception:
-                        continue
+                    for attempt in range(3):
+                        try:
+                            w = wmi.WMI(namespace=ns)
+                            for sensor in w.Sensor():
+                                name = getattr(sensor, "Name", "")
+                                stype = getattr(sensor, "SensorType", "")
+                                if "temperature" in str(stype).lower() and "cpu" in str(name).lower():
+                                    val = getattr(sensor, "Value", None)
+                                    if val is not None:
+                                        return float(val), ""
+                            break
+                        except Exception:
+                            if attempt < 2:
+                                time.sleep(1.0)
+                            continue
             except Exception:
                 pass
 

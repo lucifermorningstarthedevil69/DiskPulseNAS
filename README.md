@@ -90,7 +90,17 @@ Temperature itself comes from whichever source the drive actually populates: `sm
 CPU temperature is exposed very differently across operating systems:
 
 - **Linux** — `psutil.sensors_temperatures()` reads `coretemp` / `k10temp` / `acpitz` directly from `/sys/class/hwmon`. Works out of the box on most desktops, laptops and servers.
-- **Windows** — the OS does **not** expose CPU package temperature through standard WMI on most consumer hardware. DiskPulse now bundles [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) inside the standalone EXE build, so CPU temperature works without any extra installation. If you are running from source (`python run.py`), install LibreHardwareMonitor separately or run it once to register its WMI namespace.
+- **Windows** — the OS does **not** expose CPU package temperature through standard WMI on most consumer hardware. DiskPulse bundles [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) inside the standalone EXE build, so CPU temperature works without any extra installation.
+
+**If you are running from source** (`python run.py`) on Windows and see **N/A**:
+
+1. Download the vendor binaries once:
+   ```powershell
+   python build_exe.py --download-vendors
+   ```
+   This fetches ffmpeg, smartmontools and LibreHardwareMonitor into `vendor/` without building the EXE.
+
+2. Restart DiskPulse. On startup it launches `LibreHardwareMonitor.exe` hidden so its WMI sensors become available. The first temperature reading may take a few seconds while the WMI namespace registers.
 
 > **For contributors:** every failure path in [`backend/drive_health.py`](backend/drive_health.py) sets a `smart_reason` (`ok / asleep / no_permission / unsupported / usb_bridge / timeout / unreadable / no_tool`) and `smartctl`'s own `exit_status` and `messages[]` are what classify it — not guesswork on stderr text. A device that is known to exist is never dropped from the card just because it couldn't be read; it is kept and explained, which is why Windows enumerates from `Get-PhysicalDisk` (`/dev/pdN`) rather than `smartctl --scan-open`, whose output only includes devices it managed to open. Run **`python diagnose_drives.py`** on the affected machine for the per-device evidence — exact command, exit status, `smartctl`'s messages and which fields came back — and `python test_drive_health_smart.py` for the 108-check replay of the reference six-drive setup.
 

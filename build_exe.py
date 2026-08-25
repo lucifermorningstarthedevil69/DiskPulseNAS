@@ -244,6 +244,16 @@ def build():
     print("==================================================")
 
     skip_vendor = "--skip-vendor" in sys.argv
+    download_vendors_only = "--download-vendors" in sys.argv
+
+    if download_vendors_only:
+        print("[Build] Download-only mode: fetching vendor binaries...")
+        ensure_vendor_binaries()
+        print("==================================================")
+        print(" [DONE] Vendor binaries downloaded.")
+        print("==================================================")
+        return
+
     if not skip_vendor:
         ensure_vendor_binaries()
     else:
@@ -277,4 +287,9 @@ def build():
         print("==================================================")
 
 if __name__ == "__main__":
-    build()
+    if "--download-vendors" in sys.argv:
+        build()
+    elif len(sys.argv) > 1 and sys.argv[1] == "--download-vendors":
+        build()
+    else:
+        build()
