@@ -6,15 +6,18 @@
 
 ## 🌟 Key Features
 
-- 📊 **Real-Time System & Drive Telemetry**: Live storage consumption, read/write IOPS, MB/s bandwidth, per-core CPU load, RAM allocation, and S.M.A.R.T. temperature health watchdog over WebSockets. Drives that can't report a temperature say [why](#-why-a-drive-says-no-smart-instead-of-a-temperature) — spun down, no S.M.A.R.T. at all, or a controller refusing pass-through — instead of a blank reading.
+- 📊 **Real-Time System & Drive Telemetry**: Live storage consumption, read/write IOPS, MB/s bandwidth, per-core CPU load, RAM allocation, CPU temperature, and S.M.A.R.T. temperature health watchdog over WebSockets. Drives that can't report a temperature say [why](#-why-a-drive-says-no-smart-instead-of-a-temperature) — spun down, no S.M.A.R.T. at all, or a controller refusing pass-through — instead of a blank reading.
 - 🗂️ **Interactive Web File Manager**: Full-featured file browser with breadcrumb navigation, dual view (Grid & List), file creation, search, rename, move, copy, deletion, and batch ZIP archive downloads.
 - 💻 **Embedded Web Terminal Shell Widget**: Execute safe Linux/Unix file management commands (`ls`, `ll`, `cd`, `mkdir`, `mv`, `cp`, `rm`, `cat`, `echo`, `touch`, `du`, `stat`, `df`, `top`, `free`, `diskpulse`) directly from your browser with ANSI color output.
 - ⚡ **High-Speed Multi-Engine Downloader**: Download HTTP/HTTPS URLs, video & media links from **1,800+ sites** — YouTube, Instagram, X/Twitter, Facebook, Vimeo, Dailymotion, TikTok, Crunchyroll & more (via `yt-dlp`), and Magnet/Torrent links (natively powered by `libtorrent` on Windows & Linux or optional Aria2) with live speed monitoring, pause/resume, and automatic **type-folder organization** into a destination you choose (a **Browse** picker or the one-tap **Backup** shortcut). Pick exact **video quality** (up to 4K) or extract **audio** (MP3/M4A/Opus/FLAC/WAV) with a "Fetch formats" preview, resilient anti-bot handling (player-client rotation + browser-cookie auth), and a one-click in-app **yt-dlp updater**. Sites that require a login (Instagram, X, Facebook) reuse your signed-in browser's cookies; DRM-protected streams (e.g. Crunchyroll premium) can't be saved.
 - 🚀 **NAS Network & Internet Speed Test**: Real-time throughput benchmark for Download Mbps, Upload Mbps, Ping latency, and ISP / datacenter detection — one-click, powered by Cloudflare's global speed edge (no external CLI required). Every run also [charts](#-what-the-speed-test-charts-show) the live transfer curve, per-probe latency against its median with jitter and packet loss, and the last 30 runs so you can see a link degrade over time.
 - 📤 **Drag-and-Drop Multi-Device Uploader**: Upload individual files **or entire folders** (drag a folder in, or use **Add folder**) with real-time queue tracking and instant Mobile QR Pairing for phone-to-NAS uploading. Choose any destination with a **Browse** folder-picker or the one-tap **Backup** shortcut. Loose files can auto-sort into type folders; whole folders always upload intact with their structure preserved.
-- 🎬 **In-Browser Web Media Player**: High-fidelity audio player with animated canvas waveform visualizer, plus a streaming video player with **audio-track switching** (dual-audio MKV), **embedded & external subtitles** (SRT/ASS/VTT sidecars), and **playback-speed** controls. Powered by `ffmpeg`/`ffprobe` on the server (see [install notes](#web-media-player--dual-audio--subtitles-ffmpeg) below).
+- 🎬 **In-Browser Web Media Player**: High-fidelity audio player with animated canvas waveform visualizer, plus a streaming video player with **audio-track switching** (dual-audio MKV), **embedded & external subtitles** (SRT/ASS/VTT sidecars), **playback-speed** controls, and **YouTube-style quality switching** (Auto / 4K / 2K / 1080p / 720p / 480p / 360p). Powered by `ffmpeg`/`ffprobe` on the server (see [install notes](#web-media-player--dual-audio--subtitles-ffmpeg) below).
 - 📄 **In-Browser PDF Preview**: Click any PDF to read it in place — page navigation, zoom, fit-to-width, and open-in-new-tab, rendered to a canvas by [PDF.js](https://mozilla.github.io/pdf.js/). The library is fetched lazily on first use and can be [vendored locally](#offline-pdf-previews) for offline installs.
+- 📜 **Transfer History**: Every completed download and upload is recorded with timestamp, size, status, destination, and duration. Filter by type, set auto-removal retention (1 day to 1 year, or never), and clear history — all persisted in `.diskpulse/transfer_history.json`.
+- 📱 **Mobile-Ready Download List**: Download cards adapt to phone screens — thumbnails go full-width, action buttons compact, long titles truncate cleanly, and progress bars hide on narrow viewports so the queue stays readable without horizontal scrolling.
 - 🐍 **Python FastAPI Standalone Server**: Built-in 1-click NAS package generator for Docker Compose, TrueNAS SCALE, Synology DSM 7, and Systemd services.
+- 🐧 **Linux Launch Script**: `run.sh` handles virtualenv creation, dependency installation, background service management (`start`/`stop`/`restart`/`status`/`logs`), systemd service generation, and cross-distro package manager detection (apt, dnf, yum, pacman, apk).
 
 ---
 
@@ -245,6 +248,14 @@ sudo apt install smartmontools      # Debian / Ubuntu
 sudo python run.py
 ```
 
+Or use the bundled launcher (recommended):
+
+```bash
+chmod +x run.sh
+./run.sh install    # installs ffmpeg, smartmontools, build tools
+./run.sh start      # starts the server
+```
+
 **Windows** — install `smartmontools`, then run DiskPulse **as Administrator**:
 
 ```powershell
@@ -305,18 +316,40 @@ ffprobe -version
 
 ### 2. Install & Run
 
+#### Linux — use the bundled launcher (recommended)
+
 ```bash
-# Clone or navigate to the repository
-cd DiskPulseNAS
+chmod +x run.sh
+./run.sh install    # one-time: installs ffmpeg, smartmontools, build tools
+./run.sh start      # starts the server on 0.0.0.0:8000
+```
+
+Or manually:
+
+```bash
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
-```
 
-#### A. Web Server Mode (Terminal)
-```bash
+# Run
 python run.py
 ```
+
+Open your browser at **[http://localhost:8000](http://localhost:8000)** (press `Ctrl+C` to terminate).
+
+#### Windows
+
+```powershell
+# Install dependencies
+pip install -r requirements.txt
+
+# Run
+python run.py
+```
+
 Open your browser at **[http://localhost:8000](http://localhost:8000)** (press `Ctrl+C` to terminate).
 
 #### B. Desktop GUI & Standalone App (No Terminal Required)
@@ -332,13 +365,27 @@ For end-users who prefer a graphical interface with clean one-click exit (no `Ct
 | **4. Desktop Control Panel** | `python gui_launcher.py --mode control-panel` | Sleek dark-themed desktop dashboard showing live server status, *Open Dashboard*, *Open Storage Folder*, *Diagnostics*, *Start/Stop*, and *Exit*. |
 
 #### C. Standalone Portable Executable (`DiskPulse.exe`)
-- **Local compilation:**
-  ```powershell
-  python build_exe.py
-  ```
-  The executable is generated at **`dist/DiskPulse.exe`**.
-- **Automated GitHub Releases:**
-  A GitHub Actions workflow is included in [`.github/workflows/release.yml`](.github/workflows/release.yml). Whenever you create a new GitHub release or push a tag (e.g. `v1.0.0`), GitHub automatically builds `DiskPulse.exe` and `DiskPulse-Windows-x64.zip` and attaches them directly to the release assets. You can also trigger the build manually from the **Actions** tab on GitHub.
+
+**Download from GitHub Releases (recommended):**
+
+Pre-built Windows executables are attached to every GitHub release. No Python or build tools needed — just download, unzip, and run.
+
+1. Open the [**DiskPulseNAS Releases**](https://github.com/jackhallloween21/DiskPulseNAS/releases) page.
+2. Download the latest `DiskPulse-Windows-x64.zip` (or `DiskPulse.exe` directly).
+3. Unzip anywhere and double-click `DiskPulse.exe`.
+4. On first launch, Windows SmartScreen may warn — click **More info** → **Run anyway** (the app is self-signed; see build notes below).
+
+**Local compilation:**
+
+```powershell
+python build_exe.py
+```
+
+The executable is generated at **`dist/DiskPulse.exe`**.
+
+**Automated GitHub Releases:**
+
+A GitHub Actions workflow is included in [`.github/workflows/release.yml`](.github/workflows/release.yml). Whenever you create a new GitHub release or push a tag (e.g. `v1.0.0`), GitHub automatically builds `DiskPulse.exe` and `DiskPulse-Windows-x64.zip` and attaches them directly to the release assets. You can also trigger the build manually from the **Actions** tab on GitHub.
 
 ---
 
@@ -446,6 +493,7 @@ DiskPulseNAS/
 │   ├── ytdlp_service.py       # yt-dlp subprocess wrapper & format probing
 │   ├── aria2_client.py        # Optional Aria2 JSON-RPC torrent client
 │   ├── media_service.py       # ffmpeg/ffprobe streaming, tracks & subtitles
+│   ├── history_service.py     # Transfer history persistence & TTL pruning
 │   ├── terminal_emulator.py   # Sandboxed NAS terminal shell
 │   ├── nas_generator.py       # Docker/TrueNAS/Synology/systemd packager
 │   └── main.py                # FastAPI REST API & WebSocket endpoints
@@ -469,6 +517,7 @@ DiskPulseNAS/
 │       ├── uploader.js        # Drag & drop and mobile QR uploader
 │       └── nas_generator.js   # 1-click NAS exporter UI
 ├── run.py                     # Primary launcher (Uvicorn + graceful shutdown)
+├── run.sh                     # Linux launcher (venv, deps, systemd, start/stop/restart)
 ├── generate_demo_data.py      # Demo seed files generator
 ├── diagnose_drives.py         # Per-drive S.M.A.R.T. diagnostic CLI
 ├── test_*.py / test_*.js      # unittest + Node.js test suites
