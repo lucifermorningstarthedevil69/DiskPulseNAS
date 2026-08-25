@@ -5,7 +5,7 @@ import platform
 import psutil
 from pathlib import Path
 from backend.config import STORAGE_ROOT, PORT, format_bytes, format_uptime
-from backend.drive_health import get_drive_health
+from backend.drive_health import get_drive_health, _run
 
 
 def get_primary_local_ip() -> str:
@@ -67,6 +67,9 @@ class TelemetryEngine:
         cpu_freq = psutil.cpu_freq()
         cpu_count_logical = psutil.cpu_count(logical=True) or 1
         cpu_count_physical = psutil.cpu_count(logical=False) or 1
+
+        # CPU Temperature (cross-platform via psutil)
+        cpu_temp_c = self._get_cpu_temperature()
 
         # Memory Metrics
         virtual_mem = psutil.virtual_memory()
@@ -150,6 +153,7 @@ class TelemetryEngine:
                 "cores_physical": cpu_count_physical,
                 "freq_current_mhz": round(cpu_freq.current, 1) if cpu_freq else 0,
                 "freq_max_mhz": round(cpu_freq.max, 1) if cpu_freq and cpu_freq.max else 0,
+                "temp_c": cpu_temp_c,
             },
             "memory": {
                 "total": virtual_mem.total,
@@ -265,5 +269,69 @@ class TelemetryEngine:
         tick.
         """
         return get_drive_health()
+
+    @staticmethod
+    def _get_cpu_temperature() -> Optional[float]:
+        """Best-effort CPU temperature from psutil sensors or Windows ACPI.
+
+        Returns the highest reported CPU/package temperature, or None when no
+        sensor is available (common in VMs / headless servers without IPMI).
+        """
+        # 1. psutil.sensors_temperatures() (Linux / macOS)
+        try:
+            if hasattr(psutil, "sensors_temperatures"):
+                temps = psutil.sensors_temperatures()
+                cpu_labels = ("coretemp", "k10temp", "acpitz", "cpu_thermal",
+                              "cpu_thermal_zone", "cpu")
+                candidates: List[float] = []
+                for chip, entries in (temps or {}).items():
+                    cl = chip.lower()
+                    if not any(label in cl for label in cpu_labels):
+                        continue
+                    for e in entries:
+                        val = getattr(e, "current", None)
+                        if val is not None and val > 0:
+                            candidates.append(float(val))
+                if candidates:
+                    return max(candidates)
+        except Exception:
+            pass
+
+        # 2. Windows ACPI thermal zones via WMI
+        if os.name == "nt":
+            try:
+                import wmi  # type: ignore
+                w = wmi.WMI(namespace="root/wmi")
+                # MSAcpi_ThermalZoneTemperature reports in tenths of Kelvin
+                for m in w.MSAcpi_ThermalZoneTemperature():
+                    raw = float(m.CurrentTemperature)
+                    c = (raw / 10.0) - 273.15
+                    if 0 < c < 150:
+                        return c
+            except Exception:
+                pass
+
+            # 3. PowerShell fallback: ACPI thermal zones
+            try:
+                ps_script = (
+                    "Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature "
+                    "| ForEach-Object { ($_.CurrentTemperature / 10) - 273.15 }"
+                )
+                exe = shutil.which("powershell") or shutil.which("pwsh")
+                if exe:
+                    raw = _run(
+                        [exe, "-NoProfile", "-NonInteractive",
+                         "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+                        timeout=10.0,
+                    )
+                    if raw:
+                        vals = [float(v) for v in raw.strip().splitlines() if v.strip()]
+                        valid = [v for v in vals if 0 < v < 150]
+                        if valid:
+                            return max(valid)
+            except Exception:
+                pass
+
+        return None
 
 telemetry_engine = TelemetryEngine()

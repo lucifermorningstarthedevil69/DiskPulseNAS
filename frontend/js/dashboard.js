@@ -344,6 +344,23 @@ class DashboardVisualizer {
       document.getElementById('dash-cpu-cores').textContent = `${cpu.cores_logical} Cores`;
       document.getElementById('dash-cpu-freq').textContent = `${cpu.freq_current_mhz} MHz`;
 
+      const tempEl = document.getElementById('dash-cpu-temp');
+      if (tempEl) {
+        const temp = cpu.temp_c;
+        if (temp !== null && temp !== undefined) {
+          tempEl.textContent = `${temp.toFixed(1)}°C`;
+          let color = 'var(--accent-emerald)';
+          if (temp >= 90) color = 'var(--accent-rose)';
+          else if (temp >= 75) color = 'var(--accent-amber)';
+          tempEl.style.color = color;
+          tempEl.style.display = 'inline';
+        } else {
+          tempEl.textContent = 'N/A';
+          tempEl.style.color = 'var(--text-dim)';
+          tempEl.style.display = 'inline';
+        }
+      }
+
       const coresContainer = document.getElementById('dash-cpu-cores-list');
       if (coresContainer && cpu.per_core) {
         coresContainer.innerHTML = cpu.per_core.map((pct, idx) => `
