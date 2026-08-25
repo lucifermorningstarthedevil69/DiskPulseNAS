@@ -169,11 +169,13 @@ const nasDeployer = new NASDeployer();
  * Called by the "Reset & Reconfigure Storage" button in the NAS Deployer panel.
  */
 async function deployResetSetup() {
-  if (!confirm(
-    'This will reset DiskPulse to the first-run setup wizard.\n\n' +
-    'Your existing storage files will NOT be deleted — only the configuration will be reset.\n\n' +
-    'Continue?'
-  )) return;
+  const ok = await confirmModal({
+    title: 'Reset DiskPulse?',
+    message: 'This will reset DiskPulse to the first-run setup wizard.\n\nYour existing storage files will NOT be deleted — only the configuration will be reset.\n\nContinue?',
+    confirmLabel: 'Reset',
+    danger: true,
+  });
+  if (!ok) return;
 
   try {
     const res = await fetch('/api/setup/reset', { method: 'POST' });

@@ -1409,20 +1409,55 @@ class DownloadManager:
         return False
 
     def delete_task(self, task_id: str, delete_file: bool = False) -> bool:
-        task = self.tasks.pop(task_id, None)
-        if task:
-            task._delete_file_on_cancel = delete_file
-            self.cancel_task(task_id)
-            if delete_file and task.target_filepath.exists():
+        task = self.tasks.get(task_id)
+        if not task:
+            return False
+
+        # 1. Signal cancel and stop the worker before removing from the dict.
+        task._cancel_flag = True
+        task._pause_event.set()
+        if task._async_task and not task._async_task.done():
+            task._async_task.cancel()
+
+        # 2. Backend-specific stop.
+        if task.backend == "libtorrent" and task._lt_handle:
+            session = self._get_libtorrent_session()
+            if session:
                 try:
+                    session.remove_torrent(task._lt_handle, 0)
+                except Exception:
+                    pass
+        elif task.backend == "aria2" and task.aria2_gid:
+            asyncio.create_task(self._safe_aria2_call(self._get_aria2_client().force_remove, task.aria2_gid))
+        if task._subprocess and task._subprocess.returncode is None:
+            try:
+                task._subprocess.terminate()
+            except ProcessLookupError:
+                pass
+
+        # 3. Now remove from tracking.
+        self.tasks.pop(task_id, None)
+
+        # 4. Cleanup files if requested.
+        if delete_file:
+            try:
+                if task.target_filepath.exists():
                     if task.target_filepath.is_dir():
                         shutil.rmtree(str(task.target_filepath))
                     else:
                         task.target_filepath.unlink()
-                except Exception:
-                    pass
-            return True
-        return False
+            except Exception:
+                pass
+
+        # 5. Always remove multi-segment temp directory.
+        try:
+            seg_dir = task.target_dir / f".{task.task_id}_segments"
+            if seg_dir.exists():
+                shutil.rmtree(str(seg_dir))
+        except Exception:
+            pass
+
+        return True
 
     def list_all(self) -> List[Dict[str, Any]]:
         return [task.to_dict() for task in sorted(self.tasks.values(), key=lambda t: t.created_at, reverse=True)]

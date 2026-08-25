@@ -164,3 +164,51 @@ class DiskPulseApp {
 
 // Global instance
 const app = new DiskPulseApp();
+
+/**
+ * Show the generic confirm modal and resolve true/false.
+ * Falls back to window.confirm if the markup is missing.
+ */
+function confirmModal({ title = 'Confirm', message = 'Are you sure?', confirmLabel = 'Confirm', danger = true } = {}) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('modal-confirm');
+    const okBtn = document.getElementById('confirm-ok-btn');
+    const cancelBtn = document.getElementById('confirm-cancel-btn');
+    if (!modal || !okBtn || !cancelBtn) { resolve(window.confirm(message)); return; }
+
+    const titleEl = document.getElementById('confirm-title');
+    const msgEl = document.getElementById('confirm-message');
+    const okLabel = document.getElementById('confirm-ok-label');
+    if (titleEl) titleEl.innerHTML = `<i data-lucide="alert-triangle"></i> ${title}`;
+    if (msgEl) msgEl.textContent = message;
+    if (okLabel) okLabel.textContent = confirmLabel;
+    okBtn.className = danger ? 'btn btn-danger' : 'btn btn-primary';
+
+    const xBtn = modal.querySelector('.modal-header .modal-close');
+    let done = false;
+    const cleanup = (result) => {
+      if (done) return;
+      done = true;
+      okBtn.removeEventListener('click', onOk);
+      cancelBtn.removeEventListener('click', onCancel);
+      if (xBtn) xBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      document.removeEventListener('keydown', onKey);
+      modal.classList.remove('active');
+      resolve(result);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onBackdrop = (e) => { if (e.target === modal) cleanup(false); };
+    const onKey = (e) => { if (e.key === 'Escape') cleanup(false); };
+
+    okBtn.addEventListener('click', onOk);
+    cancelBtn.addEventListener('click', onCancel);
+    if (xBtn) xBtn.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+    document.addEventListener('keydown', onKey);
+
+    modal.classList.add('active');
+    if (window.lucide) lucide.createIcons();
+  });
+}

@@ -815,7 +815,13 @@ class DownloadManagerView {
   }
 
   async deleteTask(taskId) {
-    if (!confirm('Remove download task?')) return;
+    const ok = await confirmModal({
+      title: 'Remove download task?',
+      message: 'This will stop the download and remove it from the list. The file on disk will be kept.',
+      confirmLabel: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
     await api.deleteDownload(taskId, false);
     this.fileListState.delete(taskId);
     this.fetchTasks();

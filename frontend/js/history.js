@@ -110,7 +110,13 @@ class HistoryController {
   }
 
   async clearAll() {
-    if (!confirm('Clear all transfer history? This cannot be undone.')) return;
+    const ok = await confirmModal({
+      title: 'Clear all transfer history?',
+      message: 'This cannot be undone.',
+      confirmLabel: 'Clear All',
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await api.clearHistory();
       this.entries = [];
