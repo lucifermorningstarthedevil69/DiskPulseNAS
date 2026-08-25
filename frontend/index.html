@@ -1059,8 +1059,21 @@
               placeholder="https://example.com/file.iso">
             <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 8px; line-height: 1.5;">
               <i data-lucide="info" style="width: 12px; height: 12px; display: inline; vertical-align: -1px;"></i>
-              Any HTTP/HTTPS file link — resumable, chunked download. The filename is read from the server
+              Any HTTP/HTTPS file link — resumable, multi-segment download. The filename is read from the server
               response when available.
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Parallel Connections (Segments)</label>
+            <select class="form-select" id="modal-dl-segments">
+              <option value="1">1 — Single stream</option>
+              <option value="2">2</option>
+              <option value="4" selected>4 — Balanced</option>
+              <option value="8">8 — Fast (if server supports it)</option>
+              <option value="16">16 — Maximum</option>
+            </select>
+            <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 6px;">
+              More segments can increase speed on fast connections, but some servers limit or block parallel requests.
             </div>
           </div>
         </div>

@@ -122,6 +122,7 @@ class AddDownloadRequest(BaseModel):
     sort_by_type: bool = True      # drop the finished file into a type subfolder
     meta_title: str = ""           # probed media title, shown on the task card
     meta_thumbnail: str = ""       # probed media thumbnail URL, shown on the card
+    segments: int = 4              # parallel HTTP connections (1-16, default 4)
 
 class ProbeRequest(BaseModel):
     url: str
@@ -415,6 +416,7 @@ async def add_download(req: AddDownloadRequest):
         sort_by_type=req.sort_by_type,
         meta_title=req.meta_title,
         meta_thumbnail=req.meta_thumbnail,
+        segments=req.segments,
     )
     return task.to_dict()
 

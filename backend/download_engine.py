@@ -222,6 +222,7 @@ class DownloadTask:
         sort_by_type: bool = True,
         meta_title: str = "",
         meta_thumbnail: str = "",
+        segments: int = 4,
     ):
         self.task_id = task_id
         self.url = url
@@ -253,6 +254,10 @@ class DownloadTask:
         #: so the card can show e.g. "1080p → 720p" when the exact pick wasn't
         #: available and we fell back to the closest stream.
         self.actual_height: Optional[int] = None
+
+        #: Multi-segment download: number of parallel connections for HTTP downloads.
+        #: 1 = single stream (default), 2-16 = parallel segments.
+        self.segments = max(1, min(int(segments), 16))
 
         #: Media metadata captured from the probe in the UI, so the task card
         #: can show the real title/thumbnail before yt-dlp reports anything.
@@ -407,6 +412,7 @@ class DownloadTask:
             "seeds": self.seeds,
             "mode": self.mode,
             "max_height": self.max_height,
+            "segments": self.segments,
             "audio_format": self.audio_format,
             "audio_bitrate": self.audio_bitrate,
             "quality_label": self._quality_label(),
@@ -519,6 +525,7 @@ class DownloadManager:
         sort_by_type: bool = True,
         meta_title: str = "",
         meta_thumbnail: str = "",
+        segments: int = 4,
     ) -> DownloadTask:
         url = url.strip()
         if not category:
@@ -550,6 +557,7 @@ class DownloadManager:
             sort_by_type=sort_by_type,
             meta_title=meta_title,
             meta_thumbnail=meta_thumbnail,
+            segments=segments,
         )
         self.tasks[task_id] = task
 
@@ -1009,12 +1017,18 @@ class DownloadManager:
     # -------------------------------------------------------- aiohttp
 
     async def _download_http(self, task: DownloadTask):
-        """Direct async HTTP downloader (resumable, multi-chunk, Google Drive bypass, no external binary required)."""
+        """Direct async HTTP downloader (resumable, multi-segment, Google Drive bypass, no external binary required)."""
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 
         # Normalize cloud URLs (Google Drive / Docs)
         download_url = normalize_cloud_url(task.url)
 
+        # Multi-segment path
+        if task.segments > 1:
+            await self._download_http_multisegment(task, download_url, headers)
+            return
+
+        # Single-stream path (original logic)
         file_mode = "wb"
         resume_offset = 0
         if task.target_filepath.exists():
@@ -1061,6 +1075,125 @@ class DownloadManager:
                                 return await self._stream_http_chunks(task, confirmed_resp, file_mode, resume_offset)
 
                     await self._stream_http_chunks(task, resp, file_mode, resume_offset)
+
+        except asyncio.CancelledError:
+            task.status = "cancelled"
+        except Exception as e:
+            task.status = "error"
+            task.error_message = str(e)
+            task.speed_bytes_sec = 0.0
+
+    async def _download_http_multisegment(self, task: DownloadTask, download_url: str, headers: Dict[str, str]):
+        """Multi-segment parallel HTTP download using Range requests."""
+        temp_files: List[str] = []
+        segment_results: List[Optional[int]] = [None] * task.segments
+
+        try:
+            # 1. Probe file size with HEAD request
+            head_headers = dict(headers)
+            timeout = aiohttp.ClientTimeout(total=20, connect=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.head(download_url, headers=head_headers, allow_redirects=True) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        download_url = str(resp.headers.get("Location", download_url))
+                        async with session.head(download_url, headers=head_headers, allow_redirects=True) as resp2:
+                            if resp2.status == 200:
+                                total_size = int(resp2.headers.get("Content-Length", 0))
+                                supports_range = resp2.headers.get("Accept-Ranges", "").lower() == "bytes"
+                            else:
+                                total_size = 0
+                                supports_range = False
+                    elif resp.status == 200:
+                        total_size = int(resp.headers.get("Content-Length", 0))
+                        supports_range = resp.headers.get("Accept-Ranges", "").lower() == "bytes"
+                    else:
+                        task.status = "error"
+                        task.error_message = f"HEAD request failed: HTTP {resp.status}"
+                        return
+
+            if total_size <= 0 or not supports_range:
+                # Fall back to single-stream download
+                await self._download_http(task)
+                return
+
+            task.total_bytes = total_size
+
+            # 2. Calculate segment ranges
+            seg_size = total_size // task.segments
+            segments_ranges = []
+            for i in range(task.segments):
+                start = i * seg_size
+                end = total_size - 1 if i == task.segments - 1 else (i + 1) * seg_size - 1
+                segments_ranges.append((start, end))
+
+            # 3. Create temp files and download segments in parallel
+            temp_dir = task.target_dir / f".{task.task_id}_segments"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            async def download_segment(session: aiohttp.ClientSession, seg_idx: int, start: int, end: int):
+                temp_path = temp_dir / f"seg_{seg_idx:04d}.part"
+                temp_files.append(str(temp_path))
+                seg_headers = {**headers, "Range": f"bytes={start}-{end}"}
+
+                try:
+                    async with session.get(download_url, headers=seg_headers, allow_redirects=True) as resp:
+                        if resp.status not in (200, 206):
+                            return 0
+
+                        downloaded = 0
+                        async with aiofiles.open(temp_path, "wb") as f:
+                            async for chunk in resp.content.iter_chunked(64 * 1024):
+                                if task._cancel_flag:
+                                    return downloaded
+                                await task._pause_event.wait()
+                                await f.write(chunk)
+                                downloaded += len(chunk)
+                                segment_results[seg_idx] = downloaded
+                        return downloaded
+                except Exception:
+                    return 0
+
+            timeout = aiohttp.ClientTimeout(total=None, connect=20, sock_read=45)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                tasks = [
+                    download_segment(session, i, seg_start, seg_end)
+                    for i, (seg_start, seg_end) in enumerate(segments_ranges)
+                ]
+                await asyncio.gather(*tasks)
+
+            # 4. Check if all segments completed
+            total_downloaded = 0
+            for seg_downloaded in segment_results:
+                if seg_downloaded is None or seg_downloaded <= 0:
+                    task.status = "error"
+                    task.error_message = "One or more segments failed to download"
+                    return
+                total_downloaded += seg_downloaded
+
+            # 5. Merge segments into final file
+            task.target_filepath.parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(task.target_filepath, "wb") as out_f:
+                for i in range(task.segments):
+                    temp_path = temp_dir / f"seg_{i:04d}.part"
+                    if temp_path.exists():
+                        async with aiofiles.open(temp_path, "rb") as in_f:
+                            while True:
+                                chunk = await in_f.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                await out_f.write(chunk)
+
+            # 6. Cleanup temp files
+            try:
+                shutil.rmtree(str(temp_dir))
+            except Exception:
+                pass
+
+            task.downloaded_bytes = total_downloaded
+            task.status = "completed"
+            task.progress_percent = 100.0
+            task.speed_bytes_sec = 0.0
+            task.completed_at = time.time()
 
         except asyncio.CancelledError:
             task.status = "cancelled"

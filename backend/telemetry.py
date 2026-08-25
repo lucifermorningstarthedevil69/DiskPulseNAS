@@ -4,6 +4,7 @@ import socket
 import platform
 import psutil
 from pathlib import Path
+from typing import Optional, List, Dict, Any
 from backend.config import STORAGE_ROOT, PORT, format_bytes, format_uptime
 from backend.drive_health import get_drive_health, _run
 

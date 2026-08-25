@@ -245,7 +245,8 @@ class DiskPulseAPI {
         progressive: opts.progressive || false,
         sort_by_type: opts.sortByType !== false,
         meta_title: opts.metaTitle || '',
-        meta_thumbnail: opts.metaThumbnail || ''
+        meta_thumbnail: opts.metaThumbnail || '',
+        segments: opts.segments || 4
       })
     });
   }

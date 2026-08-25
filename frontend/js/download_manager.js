@@ -240,9 +240,10 @@ class DownloadManagerView {
     const category = document.getElementById('modal-dl-category').value;
     const customDir = document.getElementById('modal-dl-custom-dir').value.trim();
     const sortByType = document.getElementById('modal-dl-sort-type')?.checked !== false;
+    const segments = parseInt(document.getElementById('modal-dl-segments')?.value || '4', 10);
 
     try {
-      await api.addDownload(url, category === 'downloads' ? null : category, customDir, null, { sortByType, backend: 'aiohttp' });
+      await api.addDownload(url, category === 'downloads' ? null : category, customDir, null, { sortByType, backend: 'aiohttp', segments });
       this.afterAdd();
     } catch (err) {
       alert(err.message);
