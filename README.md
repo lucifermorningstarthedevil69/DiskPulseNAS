@@ -388,6 +388,8 @@ Pre-built Windows executables are attached to every GitHub release. No Python or
 python build_exe.py
 ```
 
+The build script automatically downloads ffmpeg, smartmontools and LibreHardwareMonitor into `vendor/` before running PyInstaller. It retries transient download failures and falls back to alternate mirrors, so a brief 503 from one host won't abort the build. If a vendor binary can't be fetched, the build still completes and prints a warning — the missing tool simply won't be embedded in the EXE.
+
 The executable is generated at **`dist/DiskPulse.exe`**.
 
 **Automated GitHub Releases:**

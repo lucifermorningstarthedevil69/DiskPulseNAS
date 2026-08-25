@@ -13,6 +13,7 @@ import io
 import os
 import shutil
 import sys
+import time
 import zipfile
 from pathlib import Path
 from urllib import request
@@ -30,9 +31,10 @@ BASE_DIR = Path(__file__).resolve().parent
 # ── Vendor binary URLs ────────────────────────────────────────────────────────
 # FFmpeg "essentials" build from gyan.dev (widely used, trusted source).
 # Update the version/filename here when a newer build is desired.
-FFMPEG_ZIP_URL = (
-    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-)
+FFMPEG_ZIP_URLS = [
+    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+]
 # Smartmontools portable Windows release (GitHub).
 SMARTMONTOOLS_ZIP_URL = (
     "https://github.com/smartmontools/smartmontools/releases/download/"
@@ -44,10 +46,12 @@ SMARTCTL_ZIP_URL = (
     "smartmontools/7.4/smartmontools-7.4-1.win32-setup.exe/download"
 )
 # LibreHardwareMonitor — CPU temperature sensor for Windows.
-LHM_ZIP_URL = (
+LHM_ZIP_URLS = [
     "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/"
-    "download/v0.9.3/LibreHardwareMonitor.zip"
-)
+    "download/v0.9.3/LibreHardwareMonitor.zip",
+    "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/"
+    "download/latest/LibreHardwareMonitor.zip",
+]
 
 
 def generate_ico_if_missing():
@@ -60,26 +64,49 @@ def generate_ico_if_missing():
     return ico_path
 
 
-def _download(url: str, desc: str) -> bytes:
-    """Download a URL with a simple progress indicator."""
-    print(f"[Vendor] Downloading {desc}...")
-    print(f"         {url}")
-    req = request.Request(url, headers={"User-Agent": "DiskPulse-Builder/1.0"})
-    resp = request.urlopen(req, timeout=300)
-    total = int(resp.headers.get("Content-Length", 0))
-    data = bytearray()
-    chunk_size = 1024 * 256
-    while True:
-        chunk = resp.read(chunk_size)
-        if not chunk:
-            break
-        data.extend(chunk)
-        if total:
-            pct = len(data) * 100 // total
-            mb = len(data) / (1024 * 1024)
-            print(f"\r         {mb:.1f} MB ({pct}%)", end="", flush=True)
-    print()
-    return bytes(data)
+def _download(url: str, desc: str, retries: int = 3) -> bytes:
+    """Download a URL with retries and a simple progress indicator."""
+    last_err = None
+    for attempt in range(1, retries + 1):
+        try:
+            print(f"[Vendor] Downloading {desc}...")
+            print(f"         {url}" + (f" (attempt {attempt}/{retries})" if attempt > 1 else ""))
+            req = request.Request(url, headers={"User-Agent": "DiskPulse-Builder/1.0"})
+            resp = request.urlopen(req, timeout=300)
+            total = int(resp.headers.get("Content-Length", 0))
+            data = bytearray()
+            chunk_size = 1024 * 256
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if total:
+                    pct = len(data) * 100 // total
+                    mb = len(data) / (1024 * 1024)
+                    print(f"\r         {mb:.1f} MB ({pct}%)", end="", flush=True)
+            print()
+            return bytes(data)
+        except Exception as e:
+            last_err = e
+            print(f"[Vendor] Download attempt {attempt} failed: {e}")
+            if attempt < retries:
+                print(f"[Vendor] Retrying in 3 seconds...")
+                time.sleep(3)
+    raise last_err
+
+
+def _download_first_ok(urls: list[str], desc: str, retries: int = 3) -> bytes:
+    """Try each URL in order; return the first successful download."""
+    last_err = None
+    for url in urls:
+        try:
+            return _download(url, desc, retries=retries)
+        except Exception as e:
+            last_err = e
+            print(f"[Vendor] URL failed: {url} -> {e}")
+            continue
+    raise last_err or RuntimeError(f"All URLs failed for {desc}")
 
 
 def ensure_ffmpeg():
@@ -94,23 +121,28 @@ def ensure_ffmpeg():
         print("[Vendor] ffmpeg.exe and ffprobe.exe already present [OK]")
         return
 
-    data = _download(FFMPEG_ZIP_URL, "FFmpeg essentials")
-    print("[Vendor] Extracting ffmpeg.exe and ffprobe.exe...")
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        extracted = {"ffmpeg.exe": False, "ffprobe.exe": False}
-        for member in zf.namelist():
-            basename = os.path.basename(member).lower()
-            if basename in extracted and not extracted[basename]:
-                target = vendor_ffmpeg / basename
-                with zf.open(member) as src, open(target, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                extracted[basename] = True
-                print(f"         -> {target}")
-        missing = [k for k, v in extracted.items() if not v]
-        if missing:
-            print(f"[Vendor] WARNING: Could not find {missing} in the zip archive!")
-        else:
-            print("[Vendor] FFmpeg extracted successfully [OK]")
+    try:
+        data = _download_first_ok(FFMPEG_ZIP_URLS, "FFmpeg essentials")
+        print("[Vendor] Extracting ffmpeg.exe and ffprobe.exe...")
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            extracted = {"ffmpeg.exe": False, "ffprobe.exe": False}
+            for member in zf.namelist():
+                basename = os.path.basename(member).lower()
+                if basename in extracted and not extracted[basename]:
+                    target = vendor_ffmpeg / basename
+                    with zf.open(member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    extracted[basename] = True
+                    print(f"         -> {target}")
+            missing = [k for k, v in extracted.items() if not v]
+            if missing:
+                print(f"[Vendor] WARNING: Could not find {missing} in the zip archive!")
+            else:
+                print("[Vendor] FFmpeg extracted successfully [OK]")
+    except Exception as e:
+        print(f"[Vendor] WARNING: Could not download FFmpeg: {e}")
+        print("[Vendor] The build will proceed WITHOUT ffmpeg embedded.")
+        print("[Vendor] Install ffmpeg on the target machine or place ffmpeg.exe/ffprobe.exe in vendor/ffmpeg/ before building.")
 
 
 def ensure_smartctl():
@@ -179,7 +211,7 @@ def ensure_librehardwaremonitor():
         return
 
     try:
-        data = _download(LHM_ZIP_URL, "LibreHardwareMonitor")
+        data = _download_first_ok(LHM_ZIP_URLS, "LibreHardwareMonitor")
         print("[Vendor] Extracting LibreHardwareMonitor...")
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for member in zf.namelist():
