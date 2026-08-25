@@ -38,11 +38,14 @@ def setup_embedded_tools() -> None:
 
     ffmpeg_dir = base / "vendor" / "ffmpeg"
     smart_dir = base / "vendor" / "smartmontools"
+    lhm_dir = base / "vendor" / "librehardwaremonitor"
 
     if ffmpeg_dir.is_dir():
         dirs_to_add.append(str(ffmpeg_dir))
     if smart_dir.is_dir():
         dirs_to_add.append(str(smart_dir))
+    if lhm_dir.is_dir():
+        dirs_to_add.append(str(lhm_dir))
 
     if dirs_to_add:
         current_path = os.environ.get("PATH", "")

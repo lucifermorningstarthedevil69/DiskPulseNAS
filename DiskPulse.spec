@@ -6,8 +6,8 @@ from pathlib import Path
 
 BASE_DIR = Path.cwd()
 
-# ── Vendor binaries (ffmpeg, ffprobe, smartctl) ──────────────────────────────
-# Automatically bundle any .exe files found in vendor/ subdirectories so the
+# ── Vendor binaries (ffmpeg, ffprobe, smartctl, LibreHardwareMonitor) ─────────
+# Automatically bundle any .exe/.dll files found in vendor/ subdirectories so the
 # standalone executable ships with all required third-party tools.
 vendor_binaries = []
 vendor_dir = BASE_DIR / 'vendor'
@@ -15,12 +15,16 @@ for exe_path in glob.glob(str(vendor_dir / 'ffmpeg' / '*.exe')):
     vendor_binaries.append((exe_path, os.path.join('vendor', 'ffmpeg')))
 for exe_path in glob.glob(str(vendor_dir / 'smartmontools' / '*.exe')):
     vendor_binaries.append((exe_path, os.path.join('vendor', 'smartmontools')))
+for exe_path in glob.glob(str(vendor_dir / 'librehardwaremonitor' / '*.exe')):
+    vendor_binaries.append((exe_path, os.path.join('vendor', 'librehardwaremonitor')))
+for dll_path in glob.glob(str(vendor_dir / 'librehardwaremonitor' / '*.dll')):
+    vendor_binaries.append((dll_path, os.path.join('vendor', 'librehardwaremonitor')))
 if vendor_binaries:
     print(f'[Spec] Bundling {len(vendor_binaries)} vendor binary(ies): '
           f'{", ".join(os.path.basename(p) for p, _ in vendor_binaries)}')
 else:
     print('[Spec] WARNING: No vendor binaries found in vendor/. '
-          'ffmpeg/smartctl will NOT be embedded in the exe.')
+          'ffmpeg/smartctl/LibreHardwareMonitor will NOT be embedded in the exe.')
 
 datas = [('frontend', 'frontend')]
 try:

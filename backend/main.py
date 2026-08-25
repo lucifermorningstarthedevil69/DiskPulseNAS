@@ -55,6 +55,10 @@ async def _shutdown_kill_streams():
             print(f"Stopped {n} active media stream(s) on shutdown.")
     except Exception:
         pass
+    try:
+        telemetry_engine.cleanup()
+    except Exception:
+        pass
 
 
 @app.on_event("startup")

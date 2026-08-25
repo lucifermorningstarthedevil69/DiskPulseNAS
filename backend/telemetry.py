@@ -2,6 +2,8 @@ import time
 import os
 import socket
 import platform
+import subprocess
+import shutil
 import psutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -50,6 +52,47 @@ class TelemetryEngine:
         self.boot_time = psutil.boot_time()
         self._cached_ip = None
         self._last_ip_check = 0
+        self._lhm_process: Optional[subprocess.Popen] = None
+        self._launch_librehardwaremonitor()
+
+    def _launch_librehardwaremonitor(self) -> None:
+        """On Windows, start LibreHardwareMonitor.exe hidden so its WMI
+        sensors become available for CPU temperature queries."""
+        if os.name != "nt":
+            return
+        try:
+            from backend.embedded_tools import setup_embedded_tools
+            setup_embedded_tools()
+            lhm_exe = shutil.which("LibreHardwareMonitor.exe")
+            if not lhm_exe:
+                return
+            # Launch hidden/minimized so it registers WMI without popping a window.
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            self._lhm_process = subprocess.Popen(
+                [lhm_exe],
+                startupinfo=startupinfo,
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            self._lhm_process = None
+
+    def cleanup(self) -> None:
+        """Terminate the embedded LibreHardwareMonitor process, if any."""
+        proc = self._lhm_process
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self._lhm_process = None
 
     def get_local_ip(self) -> str:
         now = time.time()
@@ -69,8 +112,8 @@ class TelemetryEngine:
         cpu_count_logical = psutil.cpu_count(logical=True) or 1
         cpu_count_physical = psutil.cpu_count(logical=False) or 1
 
-        # CPU Temperature (cross-platform via psutil)
-        cpu_temp_c = self._get_cpu_temperature()
+        # CPU Temperature (cross-platform via psutil / WMI / ACPI)
+        cpu_temp_c, cpu_temp_reason = self._get_cpu_temperature()
 
         # Memory Metrics
         virtual_mem = psutil.virtual_memory()
@@ -155,6 +198,7 @@ class TelemetryEngine:
                 "freq_current_mhz": round(cpu_freq.current, 1) if cpu_freq else 0,
                 "freq_max_mhz": round(cpu_freq.max, 1) if cpu_freq and cpu_freq.max else 0,
                 "temp_c": cpu_temp_c,
+                "temp_reason": cpu_temp_reason,
             },
             "memory": {
                 "total": virtual_mem.total,
@@ -272,11 +316,12 @@ class TelemetryEngine:
         return get_drive_health()
 
     @staticmethod
-    def _get_cpu_temperature() -> Optional[float]:
-        """Best-effort CPU temperature from psutil sensors or Windows ACPI.
+    def _get_cpu_temperature() -> tuple[Optional[float], str]:
+        """Best-effort CPU temperature from available sensors.
 
-        Returns the highest reported CPU/package temperature, or None when no
-        sensor is available (common in VMs / headless servers without IPMI).
+        Returns ``(temperature_celsius, reason)``.  When the temperature is
+        ``None`` the reason explains why — useful for the UI so the user knows
+        whether anything is fixable.
         """
         # 1. psutil.sensors_temperatures() (Linux / macOS)
         try:
@@ -294,25 +339,44 @@ class TelemetryEngine:
                         if val is not None and val > 0:
                             candidates.append(float(val))
                 if candidates:
-                    return max(candidates)
+                    return max(candidates), ""
         except Exception:
             pass
 
-        # 2. Windows ACPI thermal zones via WMI
+        # 2. Windows: LibreHardwareMonitor / OpenHardwareMonitor WMI
         if os.name == "nt":
             try:
                 import wmi  # type: ignore
+                for ns in ("root\\LibreHardwareMonitor", "root\\OpenHardwareMonitor"):
+                    try:
+                        w = wmi.WMI(namespace=ns)
+                        for sensor in w.WmiMonitorBrightness():
+                            pass
+                        for sensor in w.Sensor():
+                            name = getattr(sensor, "Name", "")
+                            stype = getattr(sensor, "SensorType", "")
+                            if "temperature" in str(stype).lower() and "cpu" in str(name).lower():
+                                val = getattr(sensor, "Value", None)
+                                if val is not None:
+                                    return float(val), ""
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            # 3. Windows ACPI thermal zones via WMI
+            try:
+                import wmi  # type: ignore
                 w = wmi.WMI(namespace="root/wmi")
-                # MSAcpi_ThermalZoneTemperature reports in tenths of Kelvin
                 for m in w.MSAcpi_ThermalZoneTemperature():
                     raw = float(m.CurrentTemperature)
                     c = (raw / 10.0) - 273.15
                     if 0 < c < 150:
-                        return c
+                        return c, ""
             except Exception:
                 pass
 
-            # 3. PowerShell fallback: ACPI thermal zones
+            # 4. PowerShell fallback: ACPI thermal zones
             try:
                 ps_script = (
                     "Get-WmiObject -Namespace root/wmi -Class MSAcpi_ThermalZoneTemperature "
@@ -329,10 +393,12 @@ class TelemetryEngine:
                         vals = [float(v) for v in raw.strip().splitlines() if v.strip()]
                         valid = [v for v in vals if 0 < v < 150]
                         if valid:
-                            return max(valid)
+                            return max(valid), ""
             except Exception:
                 pass
 
-        return None
+            return None, "No CPU temp sensor exposed by this system"
+
+        return None, "Unsupported platform"
 
 telemetry_engine = TelemetryEngine()

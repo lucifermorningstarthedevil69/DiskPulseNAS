@@ -347,15 +347,18 @@ class DashboardVisualizer {
       const tempEl = document.getElementById('dash-cpu-temp');
       if (tempEl) {
         const temp = cpu.temp_c;
+        const reason = cpu.temp_reason || '';
         if (temp !== null && temp !== undefined) {
           tempEl.textContent = `${temp.toFixed(1)}°C`;
+          tempEl.title = '';
           let color = 'var(--accent-emerald)';
           if (temp >= 90) color = 'var(--accent-rose)';
           else if (temp >= 75) color = 'var(--accent-amber)';
           tempEl.style.color = color;
           tempEl.style.display = 'inline';
         } else {
-          tempEl.textContent = 'N/A';
+          tempEl.textContent = reason ? `N/A (${reason})` : 'N/A';
+          tempEl.title = reason || 'CPU temperature not available';
           tempEl.style.color = 'var(--text-dim)';
           tempEl.style.display = 'inline';
         }

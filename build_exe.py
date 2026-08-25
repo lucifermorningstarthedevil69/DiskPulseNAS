@@ -43,6 +43,11 @@ SMARTCTL_ZIP_URL = (
     "https://sourceforge.net/projects/smartmontools/files/"
     "smartmontools/7.4/smartmontools-7.4-1.win32-setup.exe/download"
 )
+# LibreHardwareMonitor — CPU temperature sensor for Windows.
+LHM_ZIP_URL = (
+    "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/"
+    "download/v0.9.3/LibreHardwareMonitor.zip"
+)
 
 
 def generate_ico_if_missing():
@@ -163,6 +168,33 @@ def ensure_smartctl():
     print("[Vendor] ---------------------------------------------------------")
 
 
+def ensure_librehardwaremonitor():
+    """Download LibreHardwareMonitor into vendor/librehardwaremonitor/."""
+    vendor_lhm = BASE_DIR / "vendor" / "librehardwaremonitor"
+    vendor_lhm.mkdir(parents=True, exist_ok=True)
+
+    lhm_exe = vendor_lhm / "LibreHardwareMonitor.exe"
+    if lhm_exe.exists():
+        print("[Vendor] LibreHardwareMonitor already present [OK]")
+        return
+
+    try:
+        data = _download(LHM_ZIP_URL, "LibreHardwareMonitor")
+        print("[Vendor] Extracting LibreHardwareMonitor...")
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for member in zf.namelist():
+                basename = os.path.basename(member)
+                if not basename:
+                    continue
+                target = vendor_lhm / basename
+                with zf.open(member) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+        print(f"[Vendor] LibreHardwareMonitor extracted to {vendor_lhm} [OK]")
+    except Exception as e:
+        print(f"[Vendor] WARNING: Could not download LibreHardwareMonitor: {e}")
+        print("[Vendor] CPU temperature may show N/A on Windows.")
+
+
 def ensure_vendor_binaries():
     """Download/verify all vendor binaries before building."""
     print("==================================================")
@@ -170,6 +202,7 @@ def ensure_vendor_binaries():
     print("==================================================")
     ensure_ffmpeg()
     ensure_smartctl()
+    ensure_librehardwaremonitor()
     print()
 
 
