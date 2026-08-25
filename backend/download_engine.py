@@ -1023,8 +1023,9 @@ class DownloadManager:
         # Normalize cloud URLs (Google Drive / Docs)
         download_url = normalize_cloud_url(task.url)
 
-        # Multi-segment path
-        if task.segments > 1:
+        # Multi-segment path (only for fresh downloads; resuming falls back to
+        # single-stream because partial segment files don't compose cleanly).
+        if task.segments > 1 and not (task.target_filepath.exists() and task.target_filepath.stat().st_size > 0):
             await self._download_http_multisegment(task, download_url, headers)
             return
 
@@ -1085,40 +1086,51 @@ class DownloadManager:
 
     async def _download_http_multisegment(self, task: DownloadTask, download_url: str, headers: Dict[str, str]):
         """Multi-segment parallel HTTP download using Range requests."""
-        temp_files: List[str] = []
+        temp_dir: Optional[Path] = None
+        progress_task: Optional[asyncio.Task] = None
         segment_results: List[Optional[int]] = [None] * task.segments
 
         try:
-            # 1. Probe file size with HEAD request
+            # 0. Resume safety: multi-segment can't resume cleanly from a partial
+            # file, so fall back to the single-stream path when resuming.
+            if task.target_filepath.exists() and task.target_filepath.stat().st_size > 0:
+                await self._download_http(task)
+                return
+
+            # 1. Resolve filename from a HEAD so the UI shows it immediately.
+            try:
+                hd = dict(headers)
+                to = aiohttp.ClientTimeout(total=20, connect=10)
+                async with aiohttp.ClientSession(timeout=to) as hs:
+                    async with hs.head(download_url, headers=hd, allow_redirects=True) as hr:
+                        if hr.status == 200:
+                            cd = hr.headers.get("Content-Disposition", "")
+                            fn = parse_content_disposition_filename(cd)
+                            if fn:
+                                task.filename = fn
+                                task.target_filepath = task.target_dir / fn
+            except Exception:
+                pass
+
+            # 2. Probe file size with HEAD.
             head_headers = dict(headers)
             timeout = aiohttp.ClientTimeout(total=20, connect=10)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.head(download_url, headers=head_headers, allow_redirects=True) as resp:
-                    if resp.status in (301, 302, 303, 307, 308):
-                        download_url = str(resp.headers.get("Location", download_url))
-                        async with session.head(download_url, headers=head_headers, allow_redirects=True) as resp2:
-                            if resp2.status == 200:
-                                total_size = int(resp2.headers.get("Content-Length", 0))
-                                supports_range = resp2.headers.get("Accept-Ranges", "").lower() == "bytes"
-                            else:
-                                total_size = 0
-                                supports_range = False
-                    elif resp.status == 200:
+                    if resp.status == 200:
                         total_size = int(resp.headers.get("Content-Length", 0))
                         supports_range = resp.headers.get("Accept-Ranges", "").lower() == "bytes"
                     else:
-                        task.status = "error"
-                        task.error_message = f"HEAD request failed: HTTP {resp.status}"
-                        return
+                        total_size = 0
+                        supports_range = False
 
             if total_size <= 0 or not supports_range:
-                # Fall back to single-stream download
                 await self._download_http(task)
                 return
 
             task.total_bytes = total_size
 
-            # 2. Calculate segment ranges
+            # 3. Calculate segment byte ranges.
             seg_size = total_size // task.segments
             segments_ranges = []
             for i in range(task.segments):
@@ -1126,20 +1138,40 @@ class DownloadManager:
                 end = total_size - 1 if i == task.segments - 1 else (i + 1) * seg_size - 1
                 segments_ranges.append((start, end))
 
-            # 3. Create temp files and download segments in parallel
+            # 4. Temp directory for segment files (inside target dir, hidden).
             temp_dir = task.target_dir / f".{task.task_id}_segments"
             temp_dir.mkdir(parents=True, exist_ok=True)
 
-            async def download_segment(session: aiohttp.ClientSession, seg_idx: int, start: int, end: int):
-                temp_path = temp_dir / f"seg_{seg_idx:04d}.part"
-                temp_files.append(str(temp_path))
-                seg_headers = {**headers, "Range": f"bytes={start}-{end}"}
+            # 5. Background progress aggregator.
+            async def _progress_loop():
+                last_total = 0
+                last_time = time.time()
+                while True:
+                    await asyncio.sleep(0.5)
+                    current_total = sum(r for r in segment_results if r is not None)
+                    task.downloaded_bytes = current_total
+                    now = time.time()
+                    elapsed = now - last_time
+                    if elapsed >= 0.5:
+                        task.speed_bytes_sec = (current_total - last_total) / elapsed if elapsed > 0 else 0.0
+                        last_time = now
+                        last_total = current_total
+                        if task.total_bytes > 0:
+                            task.progress_percent = min(100.0, (current_total / task.total_bytes) * 100.0)
+                            remaining = task.total_bytes - current_total
+                            if task.speed_bytes_sec > 0:
+                                task.eta_seconds = remaining / task.speed_bytes_sec
 
+            progress_task = asyncio.create_task(_progress_loop())
+
+            # 6. Download each segment in parallel.
+            async def _download_segment(session: aiohttp.ClientSession, seg_idx: int, start: int, end: int):
+                temp_path = temp_dir / f"seg_{seg_idx:04d}.part"
+                seg_headers = {**headers, "Range": f"bytes={start}-{end}"}
                 try:
                     async with session.get(download_url, headers=seg_headers, allow_redirects=True) as resp:
                         if resp.status not in (200, 206):
                             return 0
-
                         downloaded = 0
                         async with aiofiles.open(temp_path, "wb") as f:
                             async for chunk in resp.content.iter_chunked(64 * 1024):
@@ -1155,13 +1187,21 @@ class DownloadManager:
 
             timeout = aiohttp.ClientTimeout(total=None, connect=20, sock_read=45)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                tasks = [
-                    download_segment(session, i, seg_start, seg_end)
+                coros = [
+                    _download_segment(session, i, seg_start, seg_end)
                     for i, (seg_start, seg_end) in enumerate(segments_ranges)
                 ]
-                await asyncio.gather(*tasks)
+                await asyncio.gather(*coros)
 
-            # 4. Check if all segments completed
+            # 7. Stop progress loop.
+            if progress_task and not progress_task.done():
+                progress_task.cancel()
+                try:
+                    await progress_task
+                except asyncio.CancelledError:
+                    pass
+
+            # 8. Verify all segments downloaded.
             total_downloaded = 0
             for seg_downloaded in segment_results:
                 if seg_downloaded is None or seg_downloaded <= 0:
@@ -1170,7 +1210,7 @@ class DownloadManager:
                     return
                 total_downloaded += seg_downloaded
 
-            # 5. Merge segments into final file
+            # 9. Merge segments into final file.
             task.target_filepath.parent.mkdir(parents=True, exist_ok=True)
             async with aiofiles.open(task.target_filepath, "wb") as out_f:
                 for i in range(task.segments):
@@ -1183,12 +1223,7 @@ class DownloadManager:
                                     break
                                 await out_f.write(chunk)
 
-            # 6. Cleanup temp files
-            try:
-                shutil.rmtree(str(temp_dir))
-            except Exception:
-                pass
-
+            # 10. Finalize.
             task.downloaded_bytes = total_downloaded
             task.status = "completed"
             task.progress_percent = 100.0
@@ -1201,6 +1236,19 @@ class DownloadManager:
             task.status = "error"
             task.error_message = str(e)
             task.speed_bytes_sec = 0.0
+        finally:
+            # Always stop progress tracker and remove temp files.
+            if progress_task and not progress_task.done():
+                progress_task.cancel()
+                try:
+                    await progress_task
+                except asyncio.CancelledError:
+                    pass
+            if temp_dir is not None and temp_dir.exists():
+                try:
+                    shutil.rmtree(str(temp_dir))
+                except Exception:
+                    pass
 
     async def _stream_http_chunks(self, task: DownloadTask, resp: aiohttp.ClientResponse, file_mode: str, resume_offset: int):
         """Stream HTTP response chunks to target file with live speed & ETA."""
