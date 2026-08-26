@@ -511,7 +511,17 @@ def extract_with_fallback(
     ffmpeg = has_ffmpeg()
     last_error: Optional[Exception] = None
 
-    for strategy in _strategy_ladder(cookie_browser):
+    strategies = _strategy_ladder(cookie_browser)
+
+    # For probes, prefer "yt-dlp defaults" first — it returns the most complete
+    # format list (same as `yt-dlp -F`). Other strategies are tried only if it
+    # fails, not when it merely succeeds with a partial list.
+    if for_probe:
+        defaults = [s for s in strategies if s["name"] == "yt-dlp defaults"]
+        others = [s for s in strategies if s["name"] != "yt-dlp defaults"]
+        strategies = defaults + others
+
+    for strategy in strategies:
         if on_attempt:
             try:
                 on_attempt(strategy["name"])
@@ -587,6 +597,7 @@ def probe_formats(url: str) -> Dict[str, Any]:
 
     formats = info.get("formats") or []
     ffmpeg = has_ffmpeg()
+    print(f"[probe] strategy={strategy} formats={len(formats)} heights={sorted({f.get('height') for f in formats if f.get('height')})}")
 
     # Best audio size is added to video-only streams for a realistic total.
     audio_only = [f for f in formats
