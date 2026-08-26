@@ -413,6 +413,7 @@ def build_ydl_opts(
 
     if for_probe:
         opts["skip_download"] = True
+        opts["format"] = "all"
         return opts
 
     if mode == "audio":
