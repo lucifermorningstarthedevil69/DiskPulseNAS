@@ -12,9 +12,12 @@ class MultiDeviceUploader {
 
     this.filesQueue = [];
     this.isUploading = false;
-    this.cancelledItems = new Set(); // indexes of cancelled uploads
-    // Folder entries waiting on the in-app review modal (never auto-queued).
+    this.cancelledItems = new Set();
     this.pendingFolderBatch = null;
+
+    // Concurrency control: N uploads in flight at once.
+    this.MAX_CONCURRENT = 4;
+    this._semaphore = 4;
 
     this.bindEvents();
   }
@@ -412,18 +415,18 @@ class MultiDeviceUploader {
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-              ${badge}
+              <span class="nav-badge" data-role="upload-badge">${badge ? badge.replace(/<[^>]*>/g, '').trim() : 'Pending'}</span>
               ${actionBtns}
             </div>
           </div>
 
           <!-- Row 2: progress bar (always visible once added) -->
           <div style="background:var(--bg-tertiary);border-radius:4px;height:8px;overflow:hidden;">
-            <div style="height:100%;width:${pct}%;background:${barColor};border-radius:4px;transition:width 0.3s ease;"></div>
+            <div data-role="progress-bar" style="height:100%;width:${pct}%;background:${barColor};border-radius:4px;transition:width 0.3s ease;"></div>
           </div>
 
           <!-- Row 3: stats row -->
-          <div style="display:flex;justify-content:space-between;font-size:0.78rem;color:var(--text-muted);">
+          <div data-role="upload-stats" style="display:flex;justify-content:space-between;font-size:0.78rem;color:var(--text-muted);">
             <span>
               ${item.status === 'uploading' || item.status === 'done'
                 ? `${uploadedText} / ${sizeText}`
@@ -451,19 +454,55 @@ class MultiDeviceUploader {
 
     const card = document.getElementById(`upload-item-${idx}`);
     if (!card) {
-      // Fallback — full re-render
-      this.renderQueue();
+      // Card not in DOM (virtualized / scrolled away) — skip rather than
+      // rebuilding the entire queue and freezing the UI.
       return;
     }
 
     const pct = item.progress;
+    const f = item.file;
+    const sizeText = this._formatSize(f.size);
+    const uploadedText = this._formatSize(item.uploadedBytes);
+    const speedStr = this._formatSpeed(item.speedBps);
+    const etaStr = item.etaSecs > 0 ? this._formatETA(item.etaSecs) : '--';
 
-    // Progress bar
-    const bar = card.querySelector('[data-role="progress-bar"]') || card.querySelectorAll('div > div')[1]?.firstElementChild;
-    if (bar) bar.style.width = `${pct}%`;
+    let barColor = 'var(--grad-primary)';
+    if (item.status === 'done')      barColor = 'var(--grad-emerald)';
+    if (item.status === 'error')     barColor = 'var(--grad-rose)';
+    if (item.status === 'cancelled') barColor = 'var(--grad-amber)';
 
-    // Stats row — just rebuild the entire card when uploading so the numbers are always fresh
-    this.renderQueue();
+    const progressBar = card.querySelector('[data-role="progress-bar"]');
+    if (progressBar) {
+      progressBar.style.width = `${pct}%`;
+      progressBar.style.background = barColor;
+    }
+
+    const statsRow = card.querySelector('[data-role="upload-stats"]');
+    if (statsRow) {
+      statsRow.innerHTML = `
+        <span>${item.status === 'uploading' || item.status === 'done'
+          ? `${uploadedText} / ${sizeText}`
+          : `0 B / ${sizeText}`}</span>
+        <span style="display:flex;gap:16px;">
+          ${item.status === 'uploading' ? `
+            <span style="color:var(--accent-cyan);font-weight:600;">${speedStr}</span>
+            <span>ETA: <strong style="color:#fff;">${etaStr}</strong></span>
+          ` : ''}
+          <span style="font-weight:700;color:${item.status === 'done' ? 'var(--accent-emerald)' : '#fff'};">${pct}%</span>
+        </span>
+      `;
+    }
+
+    const badge = card.querySelector('[data-role="upload-badge"]');
+    if (badge && item.status === 'uploading') {
+      badge.textContent = 'Uploading';
+      badge.style.background = 'rgba(0,242,254,0.2)';
+      badge.style.color = 'var(--accent-cyan)';
+    } else if (badge && item.status === 'done') {
+      badge.textContent = '✓ Done';
+      badge.style.background = 'rgba(16,185,129,0.2)';
+      badge.style.color = 'var(--accent-emerald)';
+    }
   }
 
   updateStartButton() {
@@ -496,12 +535,41 @@ class MultiDeviceUploader {
     if (!pendingItems.length) return;
 
     this.isUploading = true;
+    this._semaphore = this.MAX_CONCURRENT;
     this.updateStartButton();
 
-    for (const item of pendingItems) {
-      if (item.status === 'cancelled') continue;
-      await this._uploadSingleItem(item, targetFolder, sortByType);
+    // Process pending items with bounded concurrency.
+    const inFlight = new Set();
+    let nextIdx = 0;
+
+    const runNext = async () => {
+      while (nextIdx < pendingItems.length) {
+        const item = pendingItems[nextIdx++];
+        if (item.status === 'cancelled') continue;
+
+        await this._acquireSlot();
+        const idx = this.filesQueue.indexOf(item);
+        const p = this._uploadSingleItem(item, targetFolder, sortByType, idx)
+          .catch(err => {
+            console.error('Upload error:', err);
+            item.status = 'error';
+            this.renderQueue();
+          })
+          .finally(() => {
+            this._releaseSlot();
+            inFlight.delete(p);
+            runNext();
+          });
+        inFlight.add(p);
+      }
+    };
+
+    // Kick off N workers.
+    const workers = [];
+    for (let i = 0; i < this.MAX_CONCURRENT; i++) {
+      workers.push(runNext());
     }
+    await Promise.all(workers);
 
     this.isUploading = false;
     this.updateStartButton();
@@ -509,7 +577,18 @@ class MultiDeviceUploader {
     this.renderQueue();
   }
 
-  _uploadSingleItem(item, targetFolder, sortByType = true) {
+  _acquireSlot() {
+    while (this._semaphore <= 0) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    this._semaphore--;
+  }
+
+  _releaseSlot() {
+    this._semaphore++;
+  }
+
+  _uploadSingleItem(item, targetFolder, sortByType = true, idx) {
     return new Promise((resolve) => {
       item.status = 'uploading';
       item.startedAt = Date.now();
@@ -517,13 +596,9 @@ class MultiDeviceUploader {
       item.speedBps = 0;
       item.etaSecs = 0;
       item.progress = 0;
-      this.renderQueue();
+      if (idx === undefined) idx = this.filesQueue.indexOf(item);
+      this._updateItemProgress(idx);
 
-      // A file that came from a folder is uploaded intact: its own structure is
-      // preserved and it is never split into type folders. Those land in
-      // "Backup" unless an explicit destination was chosen. Loose files keep
-      // the type-sorting toggle. Each item is its own request, so these
-      // decisions are made per file.
       const isFolderItem = !!item.fromFolder;
       const dest = isFolderItem ? (targetFolder || 'Backup') : targetFolder;
       const sort = isFolderItem ? false : sortByType;
@@ -531,8 +606,6 @@ class MultiDeviceUploader {
       const formData = new FormData();
       formData.append('target_folder', dest);
       formData.append('sort_by_type', sort ? 'true' : 'false');
-      // Send the folder-relative path as the multipart filename so the backend
-      // can rebuild the structure; loose files just send their name.
       formData.append('files', item.file, item.relPath || item.file.name);
 
       const xhr = new XMLHttpRequest();
@@ -541,15 +614,16 @@ class MultiDeviceUploader {
 
       let lastLoaded = 0;
       let lastTime = Date.now();
+      let progressTimer = null;
 
       xhr.upload.onprogress = (e) => {
         if (!e.lengthComputable) return;
 
         const now = Date.now();
-        const elapsed = (now - lastTime) / 1000;  // seconds since last update
+        const elapsed = (now - lastTime) / 1000;
         const deltaByes = e.loaded - lastLoaded;
 
-        if (elapsed > 0.3) {  // update every 300 ms minimum
+        if (elapsed > 0.3) {
           item.speedBps     = deltaByes / elapsed;
           const remaining   = e.total - e.loaded;
           item.etaSecs      = item.speedBps > 0 ? remaining / item.speedBps : 0;
@@ -559,7 +633,7 @@ class MultiDeviceUploader {
 
         item.uploadedBytes = e.loaded;
         item.progress      = Math.round((e.loaded / e.total) * 100);
-        this.renderQueue();
+        this._updateItemProgress(idx);
       };
 
       xhr.onload = () => {
@@ -572,14 +646,14 @@ class MultiDeviceUploader {
           item.status = 'error';
         }
         item.xhr = null;
-        this.renderQueue();
+        this._updateItemProgress(idx);
         resolve();
       };
 
       xhr.onerror = () => {
         item.status = 'error';
         item.xhr = null;
-        this.renderQueue();
+        this._updateItemProgress(idx);
         resolve();
       };
 
@@ -588,7 +662,18 @@ class MultiDeviceUploader {
         item.speedBps = 0;
         item.etaSecs  = 0;
         item.xhr = null;
-        this.renderQueue();
+        this._updateItemProgress(idx);
+        resolve();
+      };
+
+      // Timeout: 5 minutes per file (large images can take a while)
+      xhr.timeout = 5 * 60 * 1000;
+      xhr.ontimeout = () => {
+        item.status = 'error';
+        item.speedBps = 0;
+        item.etaSecs = 0;
+        item.xhr = null;
+        this._updateItemProgress(idx);
         resolve();
       };
 
