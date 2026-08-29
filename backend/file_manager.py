@@ -535,7 +535,144 @@ class FileManager:
             pass
         return zipfile.ZIP_DEFLATED
 
-    def create_zip_archive(self, rel_paths: List[str]) -> Optional[str]:
+    # ---- Background zip creation with live progress ----
+    # Mirrors the move/copy op_id pattern so the frontend can poll progress.
+
+    def start_zip(self, rel_paths: List[str]) -> Dict[str, Any]:
+        if not rel_paths:
+            return {"success": False, "error": "No files selected"}
+
+        items = []
+        errors = []
+        for rel in rel_paths:
+            target = self._resolve_safe_path(rel)
+            if not target.exists():
+                errors.append(f"{rel} not found")
+                continue
+            items.append((rel, target))
+
+        if not items:
+            return {"success": False, "error": "; ".join(errors) or "No valid files"}
+
+        op_id = uuid.uuid4().hex[:12]
+        state = {
+            "op_id": op_id,
+            "type": "zip",
+            "status": "running",
+            "total_bytes": 0,
+            "transferred_bytes": 0,
+            "total_files": 0,
+            "done_files": 0,
+            "total_items": len(items),
+            "done_items": 0,
+            "current_item": "",
+            "current_file": "",
+            "completed": [],
+            "errors": errors,
+            "started_at": time.time(),
+            "finished_at": None,
+            "zip_path": None,
+        }
+        with self._op_lock:
+            self._operations[op_id] = state
+            if len(self._operations) > 24:
+                running = {k for k, v in self._operations.items() if v["status"] == "running"}
+                for key, _ in sorted(self._operations.items(), key=lambda kv: kv[1]["started_at"]):
+                    if len(self._operations) <= 24 or key in running:
+                        continue
+                    del self._operations[key]
+
+        thread = threading.Thread(
+            target=self._run_zip, args=(op_id, items),
+            name=f"zip-{op_id}", daemon=True,
+        )
+        thread.start()
+        return {"success": True, "op_id": op_id}
+
+    def _run_zip(self, op_id: str, items: List) -> None:
+        with self._op_lock:
+            state = self._operations[op_id]
+        try:
+            total_bytes, total_files = self._scan_totals([src for _, src in items])
+            with self._op_lock:
+                state["total_bytes"] = total_bytes
+                state["total_files"] = total_files
+
+            temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+            temp_zip.close()
+            zip_path = temp_zip.name
+
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+                for rel, target in items:
+                    with self._op_lock:
+                        state["current_item"] = rel
+                        state["current_file"] = ""
+                    try:
+                        if target.is_file():
+                            self._zip_add_file(zf, target, target.name, state)
+                        elif target.is_dir():
+                            self._zip_add_dir(zf, target, state)
+                        with self._op_lock:
+                            state["completed"].append(rel)
+                    except Exception as e:
+                        with self._op_lock:
+                            state["errors"].append(f"Failed to zip {rel}: {str(e)}")
+                    with self._op_lock:
+                        state["done_items"] += 1
+
+            with self._op_lock:
+                state["zip_path"] = zip_path
+                state["status"] = "done"
+        except Exception as e:
+            with self._op_lock:
+                state["errors"].append(str(e))
+                state["status"] = "error"
+        finally:
+            with self._op_lock:
+                state["current_item"] = ""
+                state["current_file"] = ""
+                state["finished_at"] = time.time()
+
+    def _zip_add_file(self, zf: zipfile.ZipFile, path: Path, arcname: str, state: Dict[str, Any]) -> None:
+        with self._op_lock:
+            state["current_file"] = path.name
+        zf.write(str(path), arcname=arcname, compress_type=self._zip_compression_for(path))
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        with self._op_lock:
+            state["transferred_bytes"] += size
+            state["done_files"] += 1
+
+    def _zip_add_dir(self, zf: zipfile.ZipFile, dir_path: Path, state: Dict[str, Any]) -> None:
+        for entry in os.scandir(dir_path):
+            child = Path(entry.path)
+            if entry.is_dir():
+                self._zip_add_dir(zf, child, state)
+            else:
+                with self._op_lock:
+                    state["current_file"] = child.name
+                arcname = str(child.relative_to(dir_path.parent))
+                self._zip_add_file(zf, child, arcname, state)
+
+    def get_zip_status(self, op_id: str) -> Optional[Dict[str, Any]]:
+        with self._op_lock:
+            state = self._operations.get(op_id)
+            if state is None:
+                return None
+            snapshot = dict(state)
+            snapshot["completed"] = list(state["completed"])
+            snapshot["errors"] = list(state["errors"])
+        return snapshot
+
+    def consume_zip_path(self, op_id: str) -> Optional[str]:
+        """Return the zip path and remove the op so it can't be polled twice."""
+        with self._op_lock:
+            state = self._operations.pop(op_id, None)
+        if state and state.get("zip_path"):
+            return state["zip_path"]
+        return None
         """Creates a temporary zip archive of requested paths and returns file path.
 
         Compression is chosen per-entry: already-compressed media and any file

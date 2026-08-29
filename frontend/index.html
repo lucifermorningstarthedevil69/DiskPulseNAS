@@ -1406,7 +1406,24 @@
     </div>
   </div>
 
+  <!-- Zip Progress Modal -->
+  <div class="modal-backdrop" id="modal-zip-progress">
+    <div class="modal-card" style="max-width: 480px;">
+      <div class="modal-header">
+        <h3 class="modal-title"><i data-lucide="archive"></i> Preparing ZIP Archive</h3>
+      </div>
+      <div class="modal-body">
+        <p id="zip-progress-status" style="font-size: 0.85rem; color: var(--text-muted); margin: 0 0 12px;">Creating archive…</p>
+        <div style="background: rgba(255,255,255,0.06); border-radius: 6px; height: 8px; overflow: hidden;">
+          <div id="zip-progress-bar" style="width: 0%; height: 100%; background: var(--accent-cyan); transition: width 0.3s ease;"></div>
+        </div>
+        <p id="zip-progress-detail" style="font-size: 0.75rem; color: var(--text-dim); margin: 8px 0 0;"></p>
+      </div>
+    </div>
+  </div>
+
   <!-- Scripts -->
+
   <script src="js/api.js"></script>
   <script src="js/folder_picker.js"></script>
   <script src="js/dashboard.js"></script>

@@ -192,6 +192,21 @@ class DiskPulseAPI {
     return `${this.baseUrl}/api/files/zip`;
   }
 
+  async startZip(paths) {
+    return this.request('/api/files/zip-start', {
+      method: 'POST',
+      body: JSON.stringify({ paths })
+    });
+  }
+
+  async getZipStatus(opId) {
+    return this.request(`/api/files/zip-status/${opId}`);
+  }
+
+  async downloadZip(opId) {
+    return `${this.baseUrl}/api/files/zip-download/${opId}`;
+  }
+
   getRawFileUrl(path) {
     return `${this.baseUrl}/api/files/raw?path=${encodeURIComponent(path)}`;
   }

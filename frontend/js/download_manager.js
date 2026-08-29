@@ -809,7 +809,35 @@ class DownloadManagerView {
   }
 
   downloadToBrowser(fileRelPath) {
-    window.open(`${api.baseUrl}/api/files/download?path=${encodeURIComponent(fileRelPath)}`, '_blank');
+    const url = `${api.baseUrl}/api/files/download?path=${encodeURIComponent(fileRelPath)}`;
+    const name = (fileRelPath.split('/').pop()) || 'file';
+    if (this.isDesktop()) {
+      this.desktopDownload(url, name);
+    } else {
+      window.open(url, '_blank');
+    }
+  }
+
+  isDesktop() {
+    return !!(window.pywebview && window.pywebview.api);
+  }
+
+  desktopDownload(url, filename) {
+    try {
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.save_download) {
+        window.pywebview.api.save_download(url, filename);
+        return;
+      }
+    } catch (e) {
+      console.warn('Desktop download bridge failed, falling back to browser:', e);
+    }
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   async pauseTask(taskId) {

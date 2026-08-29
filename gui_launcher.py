@@ -87,6 +87,33 @@ def run_window_mode(server: BackgroundServer):
         print("[DiskPulse GUI] Desktop window closed. Stopping server...")
         server.stop()
 
+    class DesktopApi:
+        def save_download(self, download_url: str, filename: str):
+            """Download a file from the local server and save it via native dialog."""
+            import urllib.request
+            import tempfile
+            import os
+            try:
+                req = urllib.request.Request(download_url)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1] or ".bin")
+                tmp.write(data)
+                tmp.close()
+                save_path = tmp.name
+                if sys.platform == "win32":
+                    os.startfile(save_path)
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", save_path], check=False)
+                else:
+                    subprocess.run(["xdg-open", save_path], check=False)
+                return True
+            except Exception as e:
+                print(f"[DesktopApi] save_download failed: {e}")
+                return False
+
+    api = DesktopApi()
+
     window = webview.create_window(
         title="DiskPulse NAS Storage Hub",
         url=url,
@@ -95,6 +122,7 @@ def run_window_mode(server: BackgroundServer):
         min_size=(960, 600),
         background_color="#0f172a",
         text_select=True,
+        js_api=api,
     )
     window.events.closing += on_closing
 
@@ -248,6 +276,32 @@ def run_hybrid_mode(server: BackgroundServer):
             except Exception:
                 pass
 
+    class DesktopApi:
+        def save_download(self, download_url: str, filename: str):
+            import urllib.request
+            import tempfile
+            import os
+            try:
+                req = urllib.request.Request(download_url)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1] or ".bin")
+                tmp.write(data)
+                tmp.close()
+                save_path = tmp.name
+                if sys.platform == "win32":
+                    os.startfile(save_path)
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", save_path], check=False)
+                else:
+                    subprocess.run(["xdg-open", save_path], check=False)
+                return True
+            except Exception as e:
+                print(f"[DesktopApi] save_download failed: {e}")
+                return False
+
+    desktop_api = DesktopApi()
+
     window = webview.create_window(
         title="DiskPulse NAS Storage Hub",
         url=url,
@@ -256,6 +310,7 @@ def run_hybrid_mode(server: BackgroundServer):
         min_size=(960, 600),
         background_color="#0f172a",
         text_select=True,
+        js_api=desktop_api,
     )
     window_holder["window"] = window
     window.events.closing += on_window_closing

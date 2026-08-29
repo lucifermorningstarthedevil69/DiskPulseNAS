@@ -267,6 +267,36 @@ async def create_zip(req: BatchZipRequest):
     )
 
 
+@app.post("/api/files/zip-start")
+async def start_zip(req: BatchZipRequest):
+    """Start an async zip creation and return an op_id for progress polling."""
+    res = file_manager.start_zip(req.paths)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
+
+
+@app.get("/api/files/zip-status/{op_id}")
+async def zip_status(op_id: str):
+    state = file_manager.get_zip_status(op_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired zip operation")
+    return state
+
+
+@app.get("/api/files/zip-download/{op_id}")
+async def zip_download(op_id: str):
+    zip_path = file_manager.consume_zip_path(op_id)
+    if not zip_path or not os.path.exists(zip_path):
+        raise HTTPException(status_code=404, detail="Zip archive not found or expired")
+    return FileResponse(
+        zip_path,
+        filename="diskpulse_archive.zip",
+        media_type="application/zip",
+        background=BackgroundTask(_cleanup_file, zip_path),
+    )
+
+
 @app.post("/api/files/zip-download")
 async def create_zip_download(paths: List[str] = Form(...)):
     """Form-based twin of /api/files/zip.

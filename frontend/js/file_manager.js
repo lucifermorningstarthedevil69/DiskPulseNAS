@@ -617,47 +617,111 @@ class FileManagerView {
    */
   downloadSingleFile(path) {
     const name = (path.split('/').pop()) || 'file';
-    const a = document.createElement('a');
-    a.href = `${api.baseUrl}/api/files/download?path=${encodeURIComponent(path)}`;
-    a.download = name;              // hint; server also sets Content-Disposition
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    if (this.isDesktop()) {
+      this.desktopDownload(`${api.baseUrl}/api/files/download?path=${encodeURIComponent(path)}`, name);
+    } else {
+      const a = document.createElement('a');
+      a.href = `${api.baseUrl}/api/files/download?path=${encodeURIComponent(path)}`;
+      a.download = name;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
     this.showToast(`Downloading "${name}"…`);
   }
 
   /**
-   * Download several items (or a folder) as a zip. Submits a hidden form into
-   * an off-screen iframe so the archive streams to disk instead of going
-   * through fetch()+blob() (which buffered the whole thing in RAM and hung on
-   * large selections).
+   * Download several items (or a folder) as a zip with live progress.
+   * Starts an async zip build on the backend, polls the op_id, then
+   * triggers the actual file download once the archive is ready.
    */
-  downloadZip(paths) {
-    let frame = document.getElementById('fm-dl-frame');
-    if (!frame) {
-      frame = document.createElement('iframe');
-      frame.id = 'fm-dl-frame';
-      frame.name = 'fm-dl-frame';
-      frame.style.display = 'none';
-      document.body.appendChild(frame);
+  async downloadZip(paths) {
+    const modal = document.getElementById('modal-zip-progress');
+    const bar = document.getElementById('zip-progress-bar');
+    const status = document.getElementById('zip-progress-status');
+    const detail = document.getElementById('zip-progress-detail');
+    if (!modal || !bar || !status || !detail) return;
+
+    try {
+      const res = await api.startZip(paths);
+      const opId = res.op_id;
+      modal.classList.add('active');
+      bar.style.width = '0%';
+      status.textContent = 'Creating archive…';
+      detail.textContent = '';
+
+      let pollCount = 0;
+      const poll = async () => {
+        const st = await api.getZipStatus(opId);
+        if (!st) {
+          modal.classList.remove('active');
+          this.showToast('Zip operation expired or not found.');
+          return;
+        }
+        const pct = st.total_bytes > 0 ? Math.min(100, (st.transferred_bytes / st.total_bytes) * 100) : 0;
+        bar.style.width = pct.toFixed(0) + '%';
+        status.textContent = st.current_file || 'Creating archive…';
+        detail.textContent = `${st.done_files}/${st.total_files} files · ${formatSize(st.transferred_bytes)}`;
+
+        if (st.status === 'done' && st.zip_path) {
+          bar.style.width = '100%';
+          status.textContent = 'Archive ready! Starting download…';
+          detail.textContent = `${st.done_files} files · ${formatSize(st.transferred_bytes)}`;
+          await new Promise(r => setTimeout(r, 400));
+          modal.classList.remove('active');
+          this.downloadZipFile(opId);
+        } else if (st.status === 'error') {
+          modal.classList.remove('active');
+          this.showToast('Failed to create zip: ' + (st.errors && st.errors.join(', ') || 'unknown error'));
+        } else {
+          pollCount++;
+          setTimeout(poll, Math.min(500, 200 + pollCount * 20));
+        }
+      };
+      poll();
+    } catch (err) {
+      modal.classList.remove('active');
+      this.showToast(err.message);
     }
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = `${api.baseUrl}/api/files/zip-download`;
-    form.target = 'fm-dl-frame';
-    form.style.display = 'none';
-    paths.forEach(p => {
-      const input = document.createElement('input');
-      input.type = 'hidden';
-      input.name = 'paths';
-      input.value = p;
-      form.appendChild(input);
-    });
-    document.body.appendChild(form);
-    form.submit();
-    form.remove();
-    this.showToast(`Preparing ${paths.length} item${paths.length > 1 ? 's' : ''} for download…`);
+  }
+
+  downloadZipFile(opId) {
+    const url = api.downloadZip(opId);
+    if (this.isDesktop()) {
+      this.desktopDownload(url, 'diskpulse_archive.zip');
+    } else {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'diskpulse_archive.zip';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+    this.showToast('Downloading archive…');
+  }
+
+  isDesktop() {
+    return !!(window.pywebview && window.pywebview.api);
+  }
+
+  desktopDownload(url, filename) {
+    try {
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.save_download) {
+        window.pywebview.api.save_download(url, filename);
+        return;
+      }
+    } catch (e) {
+      console.warn('Desktop download bridge failed, falling back to browser:', e);
+    }
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   /** Minimal transient toast; the file manager had no notification helper. */
