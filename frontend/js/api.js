@@ -203,7 +203,7 @@ class DiskPulseAPI {
     return this.request(`/api/files/zip-status/${opId}`);
   }
 
-  async downloadZip(opId) {
+  downloadZip(opId) {
     return `${this.baseUrl}/api/files/zip-download/${opId}`;
   }
 
